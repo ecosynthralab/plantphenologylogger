@@ -150,13 +150,15 @@ is genuinely thin there. This is a bonus layer on top of the manually
 researched names already in the curated table (e.g. Synedrella nodiflora's
 Yoruba names, sourced from NMPPDB), not a replacement for them.
 
-## Enabling Supabase sync (optional)
+## Enabling Supabase sync
 
 The app works fully offline on localStorage with no setup. To add
-cross-device sync:
+cross-device sync (now genuinely two-way — pushes on save, pulls on load,
+stays live via realtime while the tab is open):
 
-1. Create a free project at https://supabase.com (no card required).
-2. In the SQL editor, create two tables:
+1. Create a free project at https://supabase.com (already done if you're
+   reading this after setup).
+2. In the SQL editor, run:
 
 ```sql
 create table observations (
@@ -165,34 +167,59 @@ create table observations (
   "growthStage" text, height numeric,
   vegetative text, "flowerBud" text, "openFlower" text, "fruitPod" text, senescent text,
   cooccurring text, "weatherSoil" text, notes text,
-  location jsonb, "hasPhoto" boolean, "savedAt" text
+  location jsonb, "hasPhoto" boolean, thumb text, "savedAt" text
 );
 
 create table species (
   id text primary key,
   common text, sci text, family text, status text, "statusLabel" text,
   origin text, note text, tags jsonb, img text, phenophase text,
-  "phenoNote" text, sources jsonb, "userLogged" boolean
+  "phenoNote" text, "localNames" jsonb, sources jsonb, "userLogged" boolean
 );
 
 alter table observations enable row level security;
 alter table species enable row level security;
+
+-- both insert AND select policies are required — an insert-only policy
+-- (what an earlier version of this README had) blocks the app from ever
+-- reading data back, which silently breaks cross-device sync entirely.
 create policy "public insert" on observations for insert with check (true);
+create policy "public select" on observations for select using (true);
 create policy "public insert" on species for insert with check (true);
+create policy "public select" on species for select using (true);
+create policy "public update" on species for update using (true);
+
+-- required for the realtime subscription (live updates without a
+-- manual refresh) to actually fire on other open devices/tabs:
+alter publication supabase_realtime add table observations, species;
 ```
 
-3. In Netlify or directly in `index.html`, set:
+3. In Supabase: **Settings → API** — copy two values:
+   - **Project URL** (looks like `https://xxxxxxxxxxxx.supabase.co`)
+   - **Project API keys → `anon` `public`** key (a long JWT-looking string,
+     NOT the `service_role` key — that one must never go in client-side code)
+
+4. In `index.html`, near the top of the `<script>` block, set:
 ```js
-const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";
-const SUPABASE_ANON_KEY = "your-anon-public-key";
+const SUPABASE_URL = "https://xxxxxxxxxxxx.supabase.co";
+const SUPABASE_ANON_KEY = "eyJ...your-anon-public-key...";
 ```
-4. Redeploy. Every save now also mirrors to Supabase in the background —
-   if it's unreachable (bad signal in the field), the local save still
-   succeeds and nothing is lost; the mirror just silently fails that once.
+5. Redeploy (re-drag the `netlify-site` folder onto Netlify Drop, or push
+   if you've since connected a git repo).
 
-This is a one-way mirror (device → Supabase), not two-way sync between
-devices yet — reading back from Supabase into the app on a second device
-would be a follow-up if you want it.
+Once live, the footer shows **"Cloud sync: live"** instead of "Local only"
+— that's the quick way to confirm it actually took. On load, the app pulls
+down anything saved from other devices (deduping observations by id and
+species by scientific name) and merges it into local storage; while a tab
+stays open, new saves from other devices arrive automatically via a
+realtime subscription. A save from a device that's offline still succeeds
+locally and syncs up next time it's back online — nothing is lost.
+
+The `anon` key is meant to be public-facing (that's what row-level security
+policies are for), but if this repo is ever pushed to a **public** GitHub
+repo, it's still worth knowing both the Supabase URL and anon key would be
+visible in the source — normal for this architecture, just worth being
+aware of.
 
 ---
 

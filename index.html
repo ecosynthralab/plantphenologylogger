@@ -416,40 +416,106 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
 
 <footer>
   <span id="footerAttr"></span>
-  <span>Field species &amp; phenology monitoring</span>
+  <span id="syncStatus">Local only (no cloud sync configured)</span>
 </footer>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 
 // =====================================================================
-// SUPABASE CONFIG (optional) — fill these in after creating a free
-// project at https://supabase.com to enable cross-device sync.
-// Leave blank to run purely on-device (localStorage), which is the
-// default and always works offline. See README for the table schema.
+// SUPABASE (optional) — cross-device sync. Fill in the two values below
+// after creating a free project at https://supabase.com, running the
+// SQL in the README, and copying your Project URL + anon public key
+// from Settings → API. Leave blank to run purely on-device (localStorage),
+// which is the default and always works offline.
+//
+// This does BOTH directions: pushes new saves up (as before), AND pulls
+// everything down on load, AND stays live afterward via a realtime
+// subscription — so a save on your phone shows up on your desktop
+// without needing a manual refresh, as long as both are online at once.
 // =====================================================================
-const SUPABASE_URL = "";
-const SUPABASE_ANON_KEY = "";
+const SUPABASE_URL = "https://eonvayhkyslnzdjkentb.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable__VE8GmkMtTSeWcaaF8ZtPA_Qucvmn7K";
 const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+let supabaseClient = null;
+if (SUPABASE_ENABLED) {
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
 
-async function supabaseMirror(table, row) {
+async function supabaseUpsert(table, row) {
   if (!SUPABASE_ENABLED) return;
   try {
-    await fetch(SUPABASE_URL.replace(/\/$/,'') + "/rest/v1/" + table, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": "Bearer " + SUPABASE_ANON_KEY,
-        "Prefer": "resolution=merge-duplicates"
-      },
-      body: JSON.stringify(row)
-    });
+    const { error } = await supabaseClient.from(table).upsert(row, { onConflict: 'id' });
+    if (error) console.warn('Supabase upsert failed (data is still saved locally):', error.message);
   } catch (e) {
-    console.warn("Supabase mirror failed (data is still saved locally):", e.message);
+    console.warn('Supabase upsert failed (data is still saved locally):', e.message);
   }
+}
+
+// Pull everything down from Supabase and merge into local storage.
+// Observations dedupe by id. Species dedupe by normalized scientific
+// name, since two devices can independently auto-classify the same new
+// species with different generated ids.
+async function supabaseHydrate() {
+  if (!SUPABASE_ENABLED) return { observations: 0, species: 0 };
+  let pulledObs = 0, pulledSpecies = 0;
+
+  try {
+    const { data: remoteObs, error: obsErr } = await supabaseClient.from('observations').select('*');
+    if (!obsErr && remoteObs) {
+      remoteObs.forEach(row => {
+        const key = 'obs:' + row.id;
+        if (!lsGet(key)) { lsSet(key, row); pulledObs++; }
+      });
+    }
+  } catch (e) { console.warn('Supabase hydrate (observations) failed:', e.message); }
+
+  try {
+    const { data: remoteSpecies, error: spErr } = await supabaseClient.from('species').select('*');
+    if (!spErr && remoteSpecies) {
+      const local = getUserSpecies();
+      const localKeys = new Set(local.map(s => normalizeSciKey(s.sci)));
+      remoteSpecies.forEach(row => {
+        const k = normalizeSciKey(row.sci);
+        if (!localKeys.has(k)) { local.push(row); localKeys.add(k); pulledSpecies++; }
+      });
+      if (pulledSpecies > 0) saveUserSpecies(local);
+    }
+  } catch (e) { console.warn('Supabase hydrate (species) failed:', e.message); }
+
+  return { observations: pulledObs, species: pulledSpecies };
+}
+
+function normalizeSciKey(sci) {
+  return (sci || '').toLowerCase().replace(/\s*\(.*?\)/g, '').split(' /')[0].trim();
+}
+
+// Stay live: when another device inserts a row while this tab is open,
+// merge it in and re-render without needing a manual refresh.
+function supabaseSubscribeRealtime() {
+  if (!SUPABASE_ENABLED) return;
+  supabaseClient
+    .channel('phenology-sync')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'observations' }, (payload) => {
+      const key = 'obs:' + payload.new.id;
+      if (!lsGet(key)) {
+        lsSet(key, payload.new);
+        if (document.getElementById('view-log').classList.contains('active')) refreshLog();
+      }
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'species' }, (payload) => {
+      const local = getUserSpecies();
+      const k = normalizeSciKey(payload.new.sci);
+      if (!local.some(s => normalizeSciKey(s.sci) === k)) {
+        local.push(payload.new);
+        saveUserSpecies(local);
+        renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
+      }
+    })
+    .subscribe();
 }
 
 // =====================================================================
@@ -562,6 +628,7 @@ const spSourceLabels = { curated:"Curated table", powo:"Kew POWO", gbif:"GBIF", 
 
 function spImgSrc(s) {
   if (s.img && SPECIES_IMG[s.img]) return "data:image/jpeg;base64," + SPECIES_IMG[s.img];
+  if (s.img && typeof s.img === 'string' && s.img.startsWith('data:')) return s.img;
   // simple generated placeholder for user-logged species with no photo yet
   const initial = (s.common || s.sci || "?").trim()[0].toUpperCase();
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200"><rect width="200" height="200" fill="#DDD5BC"/><text x="100" y="118" font-size="72" text-anchor="middle" fill="#8A8267" font-family="sans-serif">${initial}</text></svg>`;
@@ -654,6 +721,7 @@ function openSpModal(id){
       ${sourceRows}
       ${s.userLogged ? '<button class="log-this-btn" id="retryClassifyBtn" style="background:var(--copper);margin-top:10px;">Retry classification</button>' : ''}
       <button class="log-this-btn" id="logThisBtn">Log an observation for this species</button>
+      ${s.userLogged ? '<button class="log-this-btn" id="deleteSpeciesBtn" style="background:transparent;color:var(--nonnative);border:1px solid var(--nonnative);margin-top:10px;">Delete from compendium</button>' : '<div style="margin-top:14px;font-size:11px;color:var(--ink-soft);font-family:var(--mono);">Built-in reference entry \u2014 not deletable, only field-logged species can be removed.</div>'}
     </div>
   `;
   document.getElementById('spModalBg').classList.add('open');
@@ -661,9 +729,24 @@ function openSpModal(id){
   document.getElementById('logThisBtn').addEventListener('click', ()=> logThisSpecies(s));
   const retryBtn = document.getElementById('retryClassifyBtn');
   if (retryBtn) retryBtn.addEventListener('click', ()=> retryClassification(s));
+  const deleteBtn = document.getElementById('deleteSpeciesBtn');
+  if (deleteBtn) deleteBtn.addEventListener('click', ()=> deleteSpecies(s));
 }
 function closeSpModal(){ document.getElementById('spModalBg').classList.remove('open'); }
 document.getElementById('spModalBg').addEventListener('click', (e)=>{ if(e.target.id==='spModalBg') closeSpModal(); });
+
+function deleteSpecies(s){
+  if (!confirm(`Delete "${s.common}" (${s.sci}) from the compendium?\n\nThis only removes the compendium entry \u2014 any observations already logged under this species name are kept in Log & Export.`)) return;
+  const list = getUserSpecies().filter(x => x.id !== s.id);
+  saveUserSpecies(list);
+  if (SUPABASE_ENABLED) {
+    supabaseClient.from('species').delete().eq('id', s.id).then(({error}) => {
+      if (error) console.warn('Supabase delete failed (removed locally regardless):', error.message);
+    });
+  }
+  closeSpModal();
+  renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
+}
 
 async function retryClassification(s){
   const btn = document.getElementById('retryClassifyBtn');
@@ -694,6 +777,7 @@ async function retryClassification(s){
       sources: result.sources || list[idx].sources
     };
     saveUserSpecies(list);
+    supabaseUpsert('species', list[idx]);
   }
   renderSpFilters(); renderSpGrid();
   openSpModal(s.id);
@@ -740,10 +824,25 @@ renderSpFilters();
 renderSpGrid();
 populateSpeciesDropdown();
 
+// Pull down anything saved from other devices, then re-render with it,
+// then stay live for the rest of the session via realtime.
+(async function initSupabaseSync(){
+  if (!SUPABASE_ENABLED) return;
+  document.getElementById('syncStatus').textContent = 'Cloud sync: connecting\u2026';
+  const { observations, species } = await supabaseHydrate();
+  document.getElementById('syncStatus').textContent = 'Cloud sync: live';
+  if (observations > 0 || species > 0) {
+    renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
+    if (document.getElementById('view-log').classList.contains('active')) refreshLog();
+    console.log(`Synced from Supabase: ${observations} observation(s), ${species} species.`);
+  }
+  supabaseSubscribeRealtime();
+})();
+
 // =====================================================================
 // AUTO-CLASSIFY new species against GBIF + Kew POWO via Netlify function
 // =====================================================================
-async function classifyAndAddSpecies(name) {
+async function classifyAndAddSpecies(name, photoDataUri) {
   const existing = allSpecies().find(s => s.sci.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(s.sci.toLowerCase().split(' ').slice(0,2).join(' ')));
   if (existing) return existing;
 
@@ -772,7 +871,7 @@ async function classifyAndAddSpecies(name) {
     origin: result.origin || '\u2014',
     note: result.note || '',
     tags: ['field-logged'],
-    img: null,
+    img: photoDataUri || null,
     phenophase: 'unrecorded',
     phenoNote: 'Logged from a field entry \u2014 no separate compendium note yet.',
     localNames: result.localNames || [],
@@ -782,7 +881,7 @@ async function classifyAndAddSpecies(name) {
   const list = getUserSpecies();
   list.push(newSpecies);
   saveUserSpecies(list);
-  supabaseMirror('species', newSpecies);
+  supabaseUpsert('species', newSpecies);
   return newSpecies;
 }
 
@@ -1107,7 +1206,7 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
   };
 
   lsSet('obs:' + record.id, record);
-  supabaseMirror('observations', record);
+  supabaseUpsert('observations', record);
 
   statusEl.className = 'status-msg';
   statusEl.textContent = 'Saved.';
@@ -1116,7 +1215,7 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
   const known = allSpecies().some(s => s.sci.toLowerCase().split(' ').slice(0,2).join(' ') === speciesName.toLowerCase().split(' ').slice(0,2).join(' '));
   if (!known) {
     statusEl.textContent = 'Saved. Checking ' + speciesName + ' against POWO / GBIF\u2026';
-    const added = await classifyAndAddSpecies(speciesName);
+    const added = await classifyAndAddSpecies(speciesName, currentPhotoThumb);
     statusEl.textContent = 'Saved. ' + speciesName + ' added to compendium as "' + added.statusLabel + '".';
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
   }
