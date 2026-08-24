@@ -446,13 +446,27 @@ if (SUPABASE_ENABLED) {
 }
 
 async function supabaseUpsert(table, row) {
-  if (!SUPABASE_ENABLED) return;
+  if (!SUPABASE_ENABLED) return { ok: true };
   try {
     const { error } = await supabaseClient.from(table).upsert(row, { onConflict: 'id' });
-    if (error) console.warn('Supabase upsert failed (data is still saved locally):', error.message);
+    if (error) {
+      console.warn('Supabase upsert failed (data is still saved locally):', error.message);
+      setSyncStatus('error', 'Cloud sync: save failed (' + error.message + ') \u2014 saved locally only');
+      return { ok: false, error: error.message };
+    }
+    return { ok: true };
   } catch (e) {
     console.warn('Supabase upsert failed (data is still saved locally):', e.message);
+    setSyncStatus('error', 'Cloud sync: save failed (' + e.message + ') \u2014 saved locally only');
+    return { ok: false, error: e.message };
   }
+}
+
+function setSyncStatus(state, text) {
+  const el = document.getElementById('syncStatus');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = state === 'error' ? 'var(--nonnative)' : state === 'live' ? 'var(--native)' : '';
 }
 
 // Pull everything down from Supabase and merge into local storage.
@@ -515,7 +529,18 @@ function supabaseSubscribeRealtime() {
         renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
       }
     })
-    .subscribe();
+    .subscribe((status, err) => {
+      // This callback is the actual source of truth for whether live sync
+      // is working — the earlier version of this app never checked it,
+      // so a failed realtime connection looked identical to a working one.
+      if (status === 'SUBSCRIBED') {
+        setSyncStatus('live', 'Cloud sync: live');
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        setSyncStatus('error', 'Cloud sync: connected, but live updates aren\u2019t working (' + status + ') \u2014 saves still push/pull on reload');
+      } else if (status === 'CLOSED') {
+        setSyncStatus('', 'Cloud sync: connection closed');
+      }
+    });
 }
 
 // =====================================================================
@@ -828,15 +853,15 @@ populateSpeciesDropdown();
 // then stay live for the rest of the session via realtime.
 (async function initSupabaseSync(){
   if (!SUPABASE_ENABLED) return;
-  document.getElementById('syncStatus').textContent = 'Cloud sync: connecting\u2026';
+  setSyncStatus('', 'Cloud sync: connecting\u2026');
   const { observations, species } = await supabaseHydrate();
-  document.getElementById('syncStatus').textContent = 'Cloud sync: live';
+  setSyncStatus('', 'Cloud sync: pulled data, connecting live updates\u2026');
   if (observations > 0 || species > 0) {
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
     if (document.getElementById('view-log').classList.contains('active')) refreshLog();
     console.log(`Synced from Supabase: ${observations} observation(s), ${species} species.`);
   }
-  supabaseSubscribeRealtime();
+  supabaseSubscribeRealtime(); // this call sets the final "Cloud sync: live" status itself, only once actually confirmed
 })();
 
 // =====================================================================
