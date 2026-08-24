@@ -950,9 +950,10 @@ captureGPS();
 // =====================================================================
 let currentPhotoBase64 = null;
 let currentPhotoMediaType = null;
-let currentPhotoThumb = null; // small resized copy stored WITH the record, for the timeline storyboard
+let currentPhotoThumb = null; // tiny resized copy stored WITH the record, for the timeline storyboard strip
+let currentPhotoCompendium = null; // larger resized copy, used when this photo becomes a species' compendium cover photo
 
-function makeThumbnail(dataUrl, maxDim){
+function makeThumbnail(dataUrl, maxDim, quality){
   return new Promise((resolve)=>{
     const img = new Image();
     img.onload = ()=>{
@@ -962,7 +963,7 @@ function makeThumbnail(dataUrl, maxDim){
       const canvas = document.createElement('canvas');
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-      resolve(canvas.toDataURL('image/jpeg', 0.6));
+      resolve(canvas.toDataURL('image/jpeg', quality || 0.6));
     };
     img.onerror = ()=> resolve(null);
     img.src = dataUrl;
@@ -1040,6 +1041,7 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
     document.getElementById('plantIdBtn').disabled = false;
     document.getElementById('photoStatus').textContent = 'Photo attached.';
     currentPhotoThumb = await makeThumbnail(dataUrl, 140);
+    currentPhotoCompendium = await makeThumbnail(dataUrl, 640, 0.82);
   };
   reader.readAsDataURL(file);
 
@@ -1064,7 +1066,7 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
 });
 
 document.getElementById('removePhotoBtn').addEventListener('click', ()=>{
-  currentPhotoBase64 = null; currentPhotoMediaType = null; currentPhotoThumb = null;
+  currentPhotoBase64 = null; currentPhotoMediaType = null; currentPhotoThumb = null; currentPhotoCompendium = null;
   document.getElementById('photoInput').value = '';
   document.getElementById('photo-preview-wrap').style.display = 'none';
   document.getElementById('photo-preview').src = '';
@@ -1215,7 +1217,7 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
   const known = allSpecies().some(s => s.sci.toLowerCase().split(' ').slice(0,2).join(' ') === speciesName.toLowerCase().split(' ').slice(0,2).join(' '));
   if (!known) {
     statusEl.textContent = 'Saved. Checking ' + speciesName + ' against POWO / GBIF\u2026';
-    const added = await classifyAndAddSpecies(speciesName, currentPhotoThumb);
+    const added = await classifyAndAddSpecies(speciesName, currentPhotoCompendium);
     statusEl.textContent = 'Saved. ' + speciesName + ' added to compendium as "' + added.statusLabel + '".';
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
   }
