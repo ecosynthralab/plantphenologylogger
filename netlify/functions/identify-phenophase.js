@@ -61,33 +61,41 @@ exports.handler = async function (event) {
       generationConfig: { maxOutputTokens: 1000 }
     });
 
-    // Gemini's free-tier Flash alias occasionally returns 503 ("model
-    // overloaded") under load — this is transient, not a real failure, so
-    // retry a couple of times with a short backoff before giving up.
+    // IMPORTANT: Netlify Functions have a hard 10-second execution limit on
+    // the free tier (26s max even on Pro) — this cannot be configured away.
+    // An earlier version of this function retried up to 3 times inside a
+    // single invocation to smooth over Gemini's occasional 503s, but that
+    // retry loop shares the SAME 10-second clock, so it could push the
+    // whole request past the limit and get killed mid-flight — which shows
+    // up client-side as an opaque "HTTP 502", a strictly worse failure than
+    // the 503 it was trying to fix.
+    //
+    // Correct pattern: ONE attempt per invocation, bounded by an explicit
+    // timeout well under 10s so Netlify's own limit is never what kills it.
+    // If it fails, the client shows a clear message and the person taps the
+    // button again — which is a genuinely fresh invocation with a fresh
+    // 10-second clock, a safer retry than looping server-side.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 9000);
     let geminiRes, data;
-    const maxAttempts = 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
       geminiRes = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body
+        body,
+        signal: controller.signal
       });
       data = await geminiRes.json();
-      if (geminiRes.ok) break;
-      const isOverloaded = geminiRes.status === 503 || geminiRes.status === 429;
-      if (isOverloaded && attempt < maxAttempts) {
-        await new Promise(r => setTimeout(r, attempt * 800));
-        continue;
-      }
-      break;
+    } finally {
+      clearTimeout(timeoutId);
     }
 
     if (!geminiRes.ok) {
       const geminiMessage = (data && data.error && data.error.message) || "No further detail from Gemini.";
       const friendly = geminiRes.status === 503
-        ? "Gemini's free-tier model is temporarily overloaded (this is common and usually clears in a few seconds) \u2014 tried 3 times, still busy. Wait a moment and try again."
+        ? "Gemini's free-tier model is temporarily overloaded \u2014 this is common and usually clears in a few seconds. Tap \"Read phenophase (AI)\" again."
         : geminiRes.status === 429
-        ? "Gemini's free-tier rate limit was hit \u2014 wait a minute before trying again."
+        ? "Gemini's free-tier rate limit was hit \u2014 wait about a minute, then try again."
         : "Gemini error: " + geminiMessage;
       return {
         statusCode: 200, // return 200 so the client can read the friendly message instead of a bare HTTP error
@@ -106,10 +114,15 @@ exports.handler = async function (event) {
       body: JSON.stringify({ content: [{ type: "text", text }] })
     };
   } catch (err) {
+    const timedOut = err.name === "AbortError";
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ error: "Request to Gemini failed: " + err.message })
+      body: JSON.stringify({
+        error: timedOut
+          ? "Gemini took too long to respond (over 9s) \u2014 tap \"Read phenophase (AI)\" again."
+          : "Request to Gemini failed: " + err.message
+      })
     };
   }
 };

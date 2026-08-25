@@ -1032,7 +1032,11 @@ async function safeFetchJsonClient(url, options){
   }
   const text = await res.text();
   if (!res.ok) {
-    return { ok: false, reason: `Request failed (HTTP ${res.status}). ${res.status === 413 ? 'The photo was likely too large for the server to accept.' : ''}` };
+    const hint = res.status === 413 ? 'The photo was likely too large for the server to accept.'
+      : res.status === 502 ? 'The server took too long or hit a temporary snag \u2014 this is usually transient, tap the button again.'
+      : res.status === 504 ? 'The request timed out \u2014 tap the button again.'
+      : '';
+    return { ok: false, reason: `Request failed (HTTP ${res.status}). ${hint}` };
   }
   if (text.trim().startsWith('<')) {
     return { ok: false, reason: 'Server returned an unexpected (non-JSON) response \u2014 usually means the photo was too large, or the function isn\u2019t deployed correctly. Try a smaller photo or check Netlify function logs.' };
@@ -1169,17 +1173,38 @@ document.getElementById('aiIdBtn').addEventListener('click', async ()=>{
   const upload = await makeApiUpload();
   if (!upload) { statusEl.textContent = 'Could not prepare the photo for upload.'; return; }
 
-  statusEl.textContent = 'Reading phenophase from photo\u2026';
-  const result = await safeFetchJsonClient('/.netlify/functions/identify-phenophase', {
+  // Try Gemini first (primary). Only fall back to Mistral if Gemini's
+  // transport fails OR it returns a structured error (rate limit, model
+  // overloaded, timeout, etc) — never both providers in the same request
+  // unless the first one genuinely didn't come back with usable text.
+  statusEl.textContent = 'Reading phenophase from photo (Gemini)\u2026';
+  let result = await safeFetchJsonClient('/.netlify/functions/identify-phenophase', {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ mediaType: upload.mediaType, imageBase64: upload.base64, prompt })
   });
 
+  let usedFallback = false;
+  if (!result.ok || result.data.error) {
+    const primaryReason = !result.ok ? result.reason : result.data.error;
+    statusEl.textContent = `Gemini unavailable (${primaryReason}) \u2014 trying Mistral instead\u2026`;
+    result = await safeFetchJsonClient('/.netlify/functions/identify-phenophase-mistral', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ mediaType: upload.mediaType, imageBase64: upload.base64, prompt })
+    });
+    usedFallback = true;
+  }
+
   if (!result.ok) { statusEl.textContent = result.reason; return; }
   const data = result.data;
-  if (data.error) { statusEl.textContent = data.error; return; }
+  if (data.error) {
+    statusEl.textContent = usedFallback
+      ? 'Both Gemini and Mistral failed. Mistral: ' + data.error
+      : data.error;
+    return;
+  }
   const text = data?.content?.[0]?.text || '';
   const jsonMatch = text.match(/\{[\s\S]*\}/);
+  const providerNote = usedFallback ? ' (via Mistral fallback)' : '';
   if (jsonMatch) {
     try {
       const parsed = JSON.parse(jsonMatch[0]);
@@ -1188,12 +1213,12 @@ document.getElementById('aiIdBtn').addEventListener('click', async ()=>{
         const el = document.getElementById('p-' + fld);
         if (el && parsed[key] != null) el.value = String(parsed[key]);
       });
-      statusEl.textContent = 'AI read: ' + (parsed.reasoning || 'scores filled in \u2014 please verify.');
+      statusEl.textContent = 'AI read' + providerNote + ': ' + (parsed.reasoning || 'scores filled in \u2014 please verify.');
     } catch (e) {
-      statusEl.textContent = 'Could not parse a score from the AI response \u2014 enter manually.';
+      statusEl.textContent = 'Could not parse a score from the AI response' + providerNote + ' \u2014 enter manually.';
     }
   } else {
-    statusEl.textContent = 'Could not parse a score from the AI response \u2014 enter manually.';
+    statusEl.textContent = 'Could not parse a score from the AI response' + providerNote + ' \u2014 enter manually.';
   }
 });
 
