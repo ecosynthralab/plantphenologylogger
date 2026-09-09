@@ -225,6 +225,11 @@ table.datatable td{padding:8px 8px; border-bottom:1px solid var(--line); white-s
 .story-dot{position:absolute; bottom:5px; right:5px; width:10px; height:10px; border-radius:50%; border:2px solid var(--card);}
 .story-date{font-family:var(--mono); font-size:9px; color:var(--ink-soft); margin-top:5px;}
 
+.sp-carousel{display:flex; gap:9px; overflow-x:auto; padding:12px 2px 4px; margin-top:2px; -webkit-overflow-scrolling:touch;}
+.sp-carousel-item{flex:0 0 auto; width:76px; text-align:center;}
+.sp-carousel-thumb{width:76px; height:76px; border-radius:8px; overflow:hidden; background:var(--bg2); border:1px solid var(--line); position:relative;}
+.sp-carousel-thumb img{width:100%;height:100%;object-fit:cover;}
+
 footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-family:var(--mono); font-size:11px; color:var(--ink-soft); display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; max-width:900px; margin-left:auto; margin-right:auto;}
 
 @media (max-width:560px){
@@ -379,6 +384,11 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
     <div class="summary-grid" id="summaryGrid"></div>
 
     <div class="log-toolbar">
+      <button id="push-to-cloud" style="background:var(--native);border-color:var(--native);">Push local data to cloud</button>
+    </div>
+    <div class="status-msg" id="pushStatus" style="text-align:left;margin-bottom:14px;"></div>
+
+    <div class="log-toolbar">
       <button class="xlsx" id="export-xlsx">Export Excel (.xlsx)</button>
       <button class="ghost" id="export-json">Export JSON</button>
       <button class="ghost" id="export-csv">Export CSV</button>
@@ -505,6 +515,19 @@ async function supabaseHydrate() {
 
 function normalizeSciKey(sci) {
   return (sci || '').toLowerCase().replace(/\s*\(.*?\)/g, '').split(' /')[0].trim();
+}
+
+// Pulls every observation logged for a species that has a photo attached,
+// newest first. Deliberately reads the tiny thumbnails already saved with
+// each observation record rather than storing a second, larger copy per
+// photo on the species entry itself — the carousel is a live view over
+// data that already exists, not a separate growing photo store.
+function getPhotosForSpecies(sci) {
+  const key = normalizeSciKey(sci);
+  const records = lsListKeys('obs:').map(k => lsGet(k)).filter(Boolean);
+  return records
+    .filter(r => r.thumb && normalizeSciKey(r.species) === key)
+    .sort((a, b) => (b.visitDate || '').localeCompare(a.visitDate || ''));
 }
 
 // Stay live: when another device inserts a row while this tab is open,
@@ -741,6 +764,22 @@ function openSpModal(id){
         <div class="lbl" style="color:${pm.color}">Last observed phenophase: ${pm.label}</div>
         <div class="txt">${s.phenoNote || 'No phenophase note recorded yet.'}</div>
       </div>
+      ${(() => {
+        const photos = getPhotosForSpecies(s.sci);
+        if (photos.length === 0) return '';
+        return `
+          <div class="sources-title" style="margin-top:16px;border-top:1px dashed var(--line);padding-top:14px;">Field photos over time (${photos.length})</div>
+          <div class="sp-carousel">
+            ${photos.map(r => {
+              const ph = dominantPhenophase(r);
+              const color = spPhenoMeta[ph].color;
+              return `<div class="sp-carousel-item">
+                <div class="sp-carousel-thumb"><img src="${r.thumb}" alt=""><div class="story-dot" style="background:${color}" title="${spPhenoMeta[ph].label}"></div></div>
+                <div class="story-date">${r.visitDate||''}</div>
+              </div>`;
+            }).join('')}
+          </div>`;
+      })()}
       <div class="sp-tags">${(s.tags||[]).map(t=>`<span class="sp-tag">${t}</span>`).join('')}</div>
       <div class="sources-title">Cross-referenced against</div>
       ${sourceRows}
@@ -1081,14 +1120,31 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
       const latRef = EXIF.getTag(this, 'GPSLatitudeRef');
       const lonRef = EXIF.getTag(this, 'GPSLongitudeRef');
       if (lat && lon) {
+        // exif-js doesn't always resolve GPS rationals to plain numbers —
+        // some versions/photos return {numerator, denominator} objects
+        // instead. The old version here assumed plain numbers and silently
+        // produced NaN when that assumption was wrong, which then got
+        // written straight into the location display as "NaN, NaN".
+        const toNum = (v) => {
+          if (typeof v === 'number') return v;
+          if (v && typeof v === 'object' && 'numerator' in v && 'denominator' in v) return v.numerator / v.denominator;
+          return parseFloat(v);
+        };
         const toDeg = (arr, ref) => {
-          let d = arr[0] + arr[1]/60 + arr[2]/3600;
-          if (ref === 'S' || ref === 'W') d = -d;
-          return d;
+          if (!Array.isArray(arr) || arr.length < 3) return NaN;
+          const d = toNum(arr[0]), m = toNum(arr[1]), s = toNum(arr[2]);
+          if ([d, m, s].some(n => isNaN(n))) return NaN;
+          let deg = d + m/60 + s/3600;
+          if (ref === 'S' || ref === 'W') deg = -deg;
+          return deg;
         };
         const latDeg = toDeg(lat, latRef), lonDeg = toDeg(lon, lonRef);
-        updateLocationUI({ lat: latDeg, lon: lonDeg, accuracy: null, source: 'photo EXIF' });
-        document.getElementById('photoStatus').textContent = 'Photo attached \u2014 GPS extracted from EXIF.';
+        if (!isNaN(latDeg) && !isNaN(lonDeg)) {
+          updateLocationUI({ lat: latDeg, lon: lonDeg, accuracy: null, source: 'photo EXIF' });
+          document.getElementById('photoStatus').textContent = 'Photo attached \u2014 GPS extracted from EXIF.';
+        } else {
+          document.getElementById('photoStatus').textContent = 'Photo attached \u2014 EXIF has GPS tags but they couldn\u2019t be parsed. Use device GPS or manual entry instead.';
+        }
       }
     });
   } catch(e) { /* EXIF not available for this file type, ignore */ }
@@ -1204,6 +1260,7 @@ document.getElementById('aiIdBtn').addEventListener('click', async ()=>{
   }
   const text = data?.content?.[0]?.text || '';
   const jsonMatch = text.match(/\{[\s\S]*\}/);
+  const providerLabel = usedFallback ? 'Mistral fallback' : 'Gemini';
   const providerNote = usedFallback ? ' (via Mistral fallback)' : '';
   if (jsonMatch) {
     try {
@@ -1213,7 +1270,16 @@ document.getElementById('aiIdBtn').addEventListener('click', async ()=>{
         const el = document.getElementById('p-' + fld);
         if (el && parsed[key] != null) el.value = String(parsed[key]);
       });
-      statusEl.textContent = 'AI read' + providerNote + ': ' + (parsed.reasoning || 'scores filled in \u2014 please verify.');
+      // Populate the Notes field with the AI's own reasoning, not just a
+      // transient status message that disappears — this is exactly the
+      // kind of context worth having attached to the saved record.
+      // Append rather than overwrite if notes already has something typed.
+      if (parsed.reasoning) {
+        const notesEl = document.getElementById('p-notes');
+        const aiLine = `AI phenophase read (${providerLabel}): ${parsed.reasoning}`;
+        notesEl.value = notesEl.value.trim() ? notesEl.value.trim() + '\n' + aiLine : aiLine;
+      }
+      statusEl.textContent = 'AI read' + providerNote + ': ' + (parsed.reasoning || 'scores filled in \u2014 please verify.') + ' (also added to Notes below.)';
     } catch (e) {
       statusEl.textContent = 'Could not parse a score from the AI response' + providerNote + ' \u2014 enter manually.';
     }
@@ -1452,6 +1518,66 @@ function renderChart(){
 }
 
 document.getElementById('refresh-log').addEventListener('click', refreshLog);
+
+// Pushes every locally-stored observation and species up to Supabase in
+// one pass — the missing complement to supabaseHydrate(). Needed because
+// the per-save push only fires once, at the moment of saving; if Supabase
+// was paused/unreachable for a whole session, everything saved during
+// that stretch is sitting in localStorage only, with no automatic way to
+// catch back up once the connection is restored. This button is that
+// catch-up path. Safe to run repeatedly — upsert on id means anything
+// already in Supabase just gets harmlessly re-written, not duplicated.
+document.getElementById('push-to-cloud').addEventListener('click', async ()=>{
+  const btn = document.getElementById('push-to-cloud');
+  const statusEl = document.getElementById('pushStatus');
+
+  if (!SUPABASE_ENABLED) {
+    statusEl.textContent = 'Supabase isn\u2019t configured in this build \u2014 nothing to push to.';
+    statusEl.style.color = 'var(--nonnative)';
+    return;
+  }
+
+  const records = await fetchAllRecords('obs:');
+  const species = getUserSpecies();
+  const total = records.length + species.length;
+  if (total === 0) {
+    statusEl.textContent = 'Nothing local to push \u2014 everything here already came from (or matches) the cloud.';
+    statusEl.style.color = '';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Pushing 0 / ' + total + '\u2026';
+  statusEl.style.color = '';
+
+  let done = 0, failed = 0;
+  const failedItems = [];
+
+  for (const r of records) {
+    const result = await supabaseUpsert('observations', r);
+    done++;
+    if (!result.ok) { failed++; failedItems.push('Observation ' + (r.species || r.id) + ': ' + result.error); }
+    btn.textContent = `Pushing ${done} / ${total}\u2026`;
+  }
+  for (const s of species) {
+    const result = await supabaseUpsert('species', s);
+    done++;
+    if (!result.ok) { failed++; failedItems.push('Species ' + (s.sci || s.id) + ': ' + result.error); }
+    btn.textContent = `Pushing ${done} / ${total}\u2026`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Push local data to cloud';
+
+  if (failed === 0) {
+    statusEl.style.color = 'var(--native)';
+    statusEl.textContent = `Done \u2014 pushed ${records.length} observation(s) and ${species.length} species record(s) to Supabase successfully.`;
+  } else {
+    statusEl.style.color = 'var(--nonnative)';
+    statusEl.textContent = `Pushed ${done - failed} of ${total}, but ${failed} failed. First failure: ${failedItems[0]}. Nothing local was lost either way \u2014 safe to tap the button again once the underlying issue (check Supabase project status) is resolved.`;
+    console.warn('Bulk push failures:', failedItems);
+  }
+});
 
 document.getElementById('export-json').addEventListener('click', async ()=>{
   const records = await fetchAllRecords('obs:');

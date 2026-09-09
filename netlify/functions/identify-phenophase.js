@@ -20,7 +20,15 @@
 //  - If you ever outgrow this, enabling billing on the same project raises
 //    the limits — nothing else in this function needs to change.
 
-const GEMINI_MODEL = "gemini-flash-latest";
+// Model is configurable via env var so a future Google rename/retirement
+// (this has already happened once — see README) doesn't require a new
+// deploy, just updating GEMINI_MODEL in Netlify. Defaults to a pinned,
+// stable model ID rather than a "-latest" alias: an alias sounds safer
+// but actually drifts forward automatically as Google ships new models,
+// and can silently end up pointing at a frontier-tier model with
+// different (or no) free-tier access — which is almost certainly why
+// this stopped responding entirely rather than just occasionally.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
 
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
