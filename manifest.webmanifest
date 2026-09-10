@@ -1,0 +1,21 @@
+{
+  "name": "Ecosynthra Field \u2014 Phenology Logger",
+  "short_name": "Ecosynthra Field",
+  "description": "Field phenology observation logger for West African plant species \u2014 log visits, track life-cycle stages over time, and identify species from photos, online or off.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#FAF8F2",
+  "theme_color": "#122A1F",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["science", "education", "productivity"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,3 +1,17 @@
 [build]
   publish = "."
   functions = "netlify/functions"
+
+# PWA: the manifest needs the right MIME type to be recognized, and the
+# service worker must never be aggressively cached — browsers already
+# re-check it often, but a stale cached copy from a CDN would block that
+# and leave people on an old version indefinitely.
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
