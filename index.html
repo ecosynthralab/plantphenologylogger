@@ -461,13 +461,35 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
 // subscription — so a save on your phone shows up on your desktop
 // without needing a manual refresh, as long as both are online at once.
 // =====================================================================
-const SUPABASE_URL = process.env.SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY;
-const SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+// This is a plain static page (no Vite/webpack build step — see
+// netlify.toml, which just does `publish = "."`), so there is nothing
+// here to substitute process.env or import.meta.env with real values;
+// referencing either in a non-module <script> throws and used to halt
+// this entire script block before anything below it could run. Instead,
+// fetch the two PUBLIC values (project URL + anon key — safe to expose,
+// see the note above supabaseWrite) at runtime from a tiny Netlify
+// Function. supabaseConfigReady resolves once SUPABASE_ENABLED and
+// supabaseClient (if applicable) are set, so on-load code that depends
+// on them (initSupabaseSync below) can await it; everything else in the
+// app checks SUPABASE_ENABLED at call time and doesn't need to wait.
+let SUPABASE_URL = null;
+let SUPABASE_ANON_KEY = null;
+let SUPABASE_ENABLED = false;
 let supabaseClient = null;
-if (SUPABASE_ENABLED) {
-  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-}
+const supabaseConfigReady = (async function initSupabaseConfig() {
+  try {
+    const res = await fetch('/.netlify/functions/config');
+    const cfg = await res.json();
+    SUPABASE_URL = cfg.SUPABASE_URL;
+    SUPABASE_ANON_KEY = cfg.SUPABASE_ANON_KEY;
+  } catch (e) {
+    console.warn('Could not load cloud sync config (app still works, local-only):', e.message);
+  }
+  SUPABASE_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+  if (SUPABASE_ENABLED) {
+    supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+})();
 
 // Writes (upsert + delete) no longer go directly from the browser to
 // Supabase with the public anon key. That key is fine to expose (it's
@@ -933,6 +955,7 @@ populateSpeciesDropdown();
 // Pull down anything saved from other devices, then re-render with it,
 // then stay live for the rest of the session via realtime.
 (async function initSupabaseSync(){
+  await supabaseConfigReady;
   if (!SUPABASE_ENABLED) return;
   setSyncStatus('', 'Cloud sync: connecting\u2026');
   const { observations, species } = await supabaseHydrate();
