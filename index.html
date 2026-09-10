@@ -455,21 +455,53 @@ if (SUPABASE_ENABLED) {
   supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
-async function supabaseUpsert(table, row) {
+// Writes (upsert + delete) no longer go directly from the browser to
+// Supabase with the public anon key. That key is fine to expose (it's
+// designed to be), but "public insert/update" + "public delete" RLS
+// policies mean *anyone* who copies it out of page source can write or
+// wipe the shared dataset — there's no way to scope that with the anon
+// key alone in a no-login team tool. Instead, writes go through the
+// `sync-write` Netlify function, which holds the real secret (the
+// Supabase service-role key, server-side only) and checks a shared team
+// passcode before touching the database. Reads (hydrate + realtime) still
+// use the anon key directly — see README for the matching RLS policies.
+function getSyncSecret() {
+  let secret = localStorage.getItem('ecosynthra_sync_secret');
+  if (secret === null) {
+    secret = (prompt('Team sync passcode (for cloud backup / multi-device sync).\nLeave blank to keep this device local-only.') || '').trim();
+    localStorage.setItem('ecosynthra_sync_secret', secret); // cache even if blank, so we don't nag on every save
+  }
+  return secret;
+}
+
+async function supabaseWrite(table, action, payload) {
   if (!SUPABASE_ENABLED) return { ok: true };
+  const secret = getSyncSecret();
+  if (!secret) return { ok: false, error: 'no sync passcode set \u2014 saved locally only' };
   try {
-    const { error } = await supabaseClient.from(table).upsert(row, { onConflict: 'id' });
-    if (error) {
-      console.warn('Supabase upsert failed (data is still saved locally):', error.message);
-      setSyncStatus('error', 'Cloud sync: save failed (' + error.message + ') \u2014 saved locally only');
-      return { ok: false, error: error.message };
+    const res = await fetch('/.netlify/functions/sync-write', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret, table, action, ...payload })
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.warn('Cloud sync failed (data is still saved locally):', data.error);
+      setSyncStatus('error', 'Cloud sync: ' + action + ' failed (' + data.error + ') \u2014 saved locally only');
+      return { ok: false, error: data.error };
     }
     return { ok: true };
   } catch (e) {
-    console.warn('Supabase upsert failed (data is still saved locally):', e.message);
+    console.warn('Cloud sync failed (data is still saved locally):', e.message);
     setSyncStatus('error', 'Cloud sync: save failed (' + e.message + ') \u2014 saved locally only');
     return { ok: false, error: e.message };
   }
+}
+async function supabaseUpsert(table, row) {
+  return supabaseWrite(table, 'upsert', { row });
+}
+async function supabaseDelete(table, id) {
+  return supabaseWrite(table, 'delete', { id });
 }
 
 function setSyncStatus(state, text) {
@@ -803,11 +835,7 @@ function deleteSpecies(s){
   if (!confirm(`Delete "${s.common}" (${s.sci}) from the compendium?\n\nThis only removes the compendium entry \u2014 any observations already logged under this species name are kept in Log & Export.`)) return;
   const list = getUserSpecies().filter(x => x.id !== s.id);
   saveUserSpecies(list);
-  if (SUPABASE_ENABLED) {
-    supabaseClient.from('species').delete().eq('id', s.id).then(({error}) => {
-      if (error) console.warn('Supabase delete failed (removed locally regardless):', error.message);
-    });
-  }
+  if (SUPABASE_ENABLED) supabaseDelete('species', s.id);
   closeSpModal();
   renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
 }
@@ -1387,7 +1415,11 @@ async function refreshLog(){
       </tr>`).join('') + '</tbody>';
     table.querySelectorAll('.del-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{
-        if (confirm('Delete this observation?')) { lsDelete('obs:' + btn.dataset.id); refreshLog(); }
+        if (confirm('Delete this observation?')) {
+          lsDelete('obs:' + btn.dataset.id);
+          if (SUPABASE_ENABLED) supabaseDelete('observations', btn.dataset.id);
+          refreshLog();
+        }
       });
     });
   }
@@ -1486,7 +1518,15 @@ function renderChart(){
   if (species && records.length) renderYoyInsight(records, species);
   else document.getElementById('yoyInsight').style.display = 'none';
 
-  if (window._phenoChartInstance) { window._phenoChartInstance.destroy(); window._phenoChartInstance = null; }
+  // Chart.js registers a chart against its canvas as soon as it's constructed,
+  // even if that canvas was hidden (display:none) at the time — which is what
+  // happens if this ever runs before the Log tab is visible. A later `new
+  // Chart()` call on the same canvas then throws "Canvas is already in use"
+  // and nothing draws. Checking Chart.getChart() (not just our own tracking
+  // variable) guarantees any prior instance — however it got there — is torn
+  // down first.
+  const existingChart = Chart.getChart(canvas) || window._phenoChartInstance;
+  if (existingChart) { existingChart.destroy(); window._phenoChartInstance = null; }
   if (!species || records.length === 0) { canvas.style.display='none'; emptyEl.style.display='block'; return; }
   canvas.style.display='block'; emptyEl.style.display='none';
 
@@ -1640,7 +1680,14 @@ document.getElementById('export-xlsx').addEventListener('click', async ()=>{
   XLSX.writeFile(wb, 'phenology_data_' + todayStr() + '.xlsx');
 });
 
-refreshLog();
+// Only refresh (and build the chart) if the Log & export tab is actually
+// visible. Calling this unconditionally on page load was the root cause of
+// the timeline chart never rendering: it constructed the Chart.js instance
+// while its canvas was still inside a display:none tab, and Chart.js
+// silently fails to size (and, per the guard in renderChart(), can jam up
+// future attempts) when that happens. The tab-click handler already calls
+// refreshLog() the moment the tab becomes active, so this loses nothing.
+if (document.getElementById('view-log').classList.contains('active')) refreshLog();
 
 </script>
 </body>
