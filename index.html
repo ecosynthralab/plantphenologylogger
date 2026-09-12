@@ -398,8 +398,10 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
 
     <div class="log-toolbar">
       <button id="push-to-cloud" style="background:var(--native);border-color:var(--native);">Push local data to cloud</button>
+      <button id="repair-species-btn" style="background:var(--copper);border-color:var(--copper);">Repair missing species</button>
     </div>
     <div class="status-msg" id="pushStatus" style="text-align:left;margin-bottom:14px;"></div>
+    <div class="status-msg" id="repairStatus" style="text-align:left;margin-bottom:14px;"></div>
 
     <div class="log-toolbar">
       <button class="xlsx" id="export-xlsx">Export Excel (.xlsx)</button>
@@ -533,11 +535,33 @@ async function supabaseWrite(table, action, payload) {
     return { ok: false, error: e.message };
   }
 }
+// Tracks which observation/species IDs have already been confirmed
+// pushed to Supabase, purely locally (never sent over the wire itself).
+// This is what lets "Push local data to cloud" push only what's actually
+// new instead of re-sending the entire local dataset \u2014 individual saves
+// already push themselves immediately when sync is on, so without this,
+// every bulk push re-sent records that were already safely in Supabase.
+function getPushedIds(kind) { return lsGet('sync:pushed:' + kind) || {}; }
+function markPushed(kind, id) {
+  const ids = getPushedIds(kind);
+  ids[id] = true;
+  lsSet('sync:pushed:' + kind, ids);
+}
+function clearPushed(kind, id) {
+  const ids = getPushedIds(kind);
+  delete ids[id];
+  lsSet('sync:pushed:' + kind, ids);
+}
+
 async function supabaseUpsert(table, row) {
-  return supabaseWrite(table, 'upsert', { row });
+  const result = await supabaseWrite(table, 'upsert', { row });
+  if (result.ok && row && row.id) markPushed(table, row.id);
+  return result;
 }
 async function supabaseDelete(table, id) {
-  return supabaseWrite(table, 'delete', { id });
+  const result = await supabaseWrite(table, 'delete', { id });
+  if (result.ok) clearPushed(table, id);
+  return result;
 }
 
 function setSyncStatus(state, text) {
@@ -1105,7 +1129,7 @@ async function renameSpeciesEntry(s, newCommon, newSci) {
 // AUTO-CLASSIFY new species against GBIF + Kew POWO via Netlify function
 // =====================================================================
 async function classifyAndAddSpecies(name, photoDataUri) {
-  const existing = allSpecies().find(s => s.sci.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(s.sci.toLowerCase().split(' ').slice(0,2).join(' ')));
+  const existing = allSpecies().find(s => typeof s.sci === 'string' && (s.sci.toLowerCase().includes(name.toLowerCase()) || name.toLowerCase().includes(s.sci.toLowerCase().split(' ').slice(0,2).join(' '))));
   if (existing) return existing;
 
   let result;
@@ -1537,11 +1561,33 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
   statusEl.textContent = 'Saved.';
 
   // auto-classify if this is a new species
-  const known = allSpecies().some(s => s.sci.toLowerCase().split(' ').slice(0,2).join(' ') === speciesName.toLowerCase().split(' ').slice(0,2).join(' '));
+  // Guarded against entries with a missing/non-string `sci` (e.g. a
+  // malformed row pulled in from a bulk cloud sync) — that used to throw
+  // here uncaught, which silently skipped compendium creation entirely
+  // while leaving the observation itself already saved above, with no
+  // visible error beyond a status message stuck on "Checking...".
+  const known = allSpecies().some(s => typeof s.sci === 'string' && s.sci.toLowerCase().split(' ').slice(0,2).join(' ') === speciesName.toLowerCase().split(' ').slice(0,2).join(' '));
   if (!known) {
     statusEl.textContent = 'Saved. Checking ' + speciesName + ' against POWO / GBIF\u2026';
-    const added = await classifyAndAddSpecies(speciesName, currentPhotoCompendium);
-    statusEl.textContent = 'Saved. ' + speciesName + ' added to compendium as "' + added.statusLabel + '".';
+    try {
+      const added = await classifyAndAddSpecies(speciesName, currentPhotoCompendium);
+      statusEl.textContent = 'Saved. ' + speciesName + ' added to compendium as "' + added.statusLabel + '".';
+    } catch (e) {
+      console.warn('Auto-classify failed, adding as unconfirmed instead (observation is still saved):', e.message);
+      const list = getUserSpecies();
+      list.push({
+        id: 'user_' + uid(), common: speciesName, sci: speciesName,
+        family: 'Family undetermined', status: 'unknown', statusLabel: 'Unconfirmed',
+        origin: '\u2014', note: 'Automated classification failed unexpectedly \u2014 added as unconfirmed so it is not lost. Open this entry and use "Identify this species" to correct it.',
+        tags: ['field-logged', 'needs identification'], img: currentPhotoCompendium || null,
+        phenophase: 'unrecorded', phenoNote: '', localNames: [],
+        sources: { powo:{checked:false,note:'Classification failed'}, gbif:{checked:false,note:'Classification failed'}, inaturalist:{checked:false,note:'Classification failed'}, fwta:{checked:false,note:'Classification failed'} },
+        userLogged: true
+      });
+      saveUserSpecies(list);
+      supabaseUpsert('species', list[list.length - 1]);
+      statusEl.textContent = 'Saved. ' + speciesName + ' added as unconfirmed (auto-classify failed \u2014 see console).';
+    }
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
   }
 
@@ -1773,11 +1819,15 @@ document.getElementById('push-to-cloud').addEventListener('click', async ()=>{
     return;
   }
 
-  const records = await fetchAllRecords('obs:');
-  const species = getUserSpecies();
+  const allRecords = await fetchAllRecords('obs:');
+  const allSpeciesLocal = getUserSpecies();
+  const pushedObs = getPushedIds('observations');
+  const pushedSpecies = getPushedIds('species');
+  const records = allRecords.filter(r => !pushedObs[r.id]);
+  const species = allSpeciesLocal.filter(s => !pushedSpecies[s.id]);
   const total = records.length + species.length;
   if (total === 0) {
-    statusEl.textContent = 'Nothing local to push \u2014 everything here already came from (or matches) the cloud.';
+    statusEl.textContent = 'Nothing new to push \u2014 everything local is already synced to the cloud.';
     statusEl.style.color = '';
     return;
   }
@@ -1813,6 +1863,55 @@ document.getElementById('push-to-cloud').addEventListener('click', async ()=>{
     statusEl.textContent = `Pushed ${done - failed} of ${total}, but ${failed} failed. First failure: ${failedItems[0]}. Nothing local was lost either way \u2014 safe to tap the button again once the underlying issue (check Supabase project status) is resolved.`;
     console.warn('Bulk push failures:', failedItems);
   }
+});
+
+// Recovers species that got silently dropped from the compendium by the
+// now-fixed auto-classify bug: the observation itself always saved fine
+// (that write happens before classification runs), so any species name
+// appearing in the log with no matching compendium entry is exactly the
+// symptom of that gap. This re-runs classification for each one found \u2014
+// no re-visiting the field, no duplicate observations, nothing lost.
+document.getElementById('repair-species-btn').addEventListener('click', async ()=>{
+  const btn = document.getElementById('repair-species-btn');
+  const statusEl = document.getElementById('repairStatus');
+  btn.disabled = true;
+  statusEl.style.color = '';
+  statusEl.textContent = 'Scanning observations for species missing from the compendium\u2026';
+
+  const records = await fetchAllRecords('obs:');
+  const loggedNames = [...new Set(records.map(r => r.species).filter(Boolean))];
+  const missing = loggedNames.filter(name =>
+    !allSpecies().some(s => typeof s.sci === 'string' &&
+      s.sci.toLowerCase().split(' ').slice(0,2).join(' ') === name.toLowerCase().split(' ').slice(0,2).join(' '))
+  );
+
+  if (missing.length === 0) {
+    btn.disabled = false;
+    statusEl.style.color = 'var(--native)';
+    statusEl.textContent = 'Nothing to repair \u2014 every logged species already has a compendium entry.';
+    return;
+  }
+
+  let done = 0, failed = 0;
+  for (const name of missing) {
+    btn.textContent = `Repairing ${done + 1} / ${missing.length}\u2026`;
+    try {
+      await classifyAndAddSpecies(name, null);
+      done++;
+    } catch (e) {
+      failed++;
+      console.warn('Repair failed for', name, e.message);
+    }
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Repair missing species';
+  renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
+
+  statusEl.style.color = failed === 0 ? 'var(--native)' : 'var(--nonnative)';
+  statusEl.textContent = failed === 0
+    ? `Done \u2014 added ${done} missing species to the compendium: ${missing.join(', ')}.`
+    : `Added ${done} of ${missing.length}; ${failed} failed \u2014 check console. Nothing was lost, safe to tap again.`;
 });
 
 document.getElementById('export-json').addEventListener('click', async ()=>{
