@@ -10,25 +10,40 @@
 //  3. Deploy. Netlify auto-detects functions in netlify/functions/.
 //
 // Free-tier notes:
-//  - Uses the "gemini-flash-latest" alias, which Google automatically points
-//    at its current free-tier Flash model. This avoids the function breaking
-//    every time Google retires a specific dated model name (e.g. 2.5-flash).
-//  - Roughly 1,000-1,500 requests/day, 10-15 requests/minute depending on
-//    the model behind the alias — plenty for field use.
+//  - Uses a pinned model ID (see GEMINI_MODEL below), not a "-latest" alias
+//    — aliases drift forward automatically and can silently land on a
+//    model with different or no free-tier access. The tradeoff: a pinned
+//    model eventually gets retired by Google and needs manually updating
+//    here (see the deprecation history below for how that's gone so far).
+//  - Roughly 1,000-1,500 requests/day, 10-15 requests/minute on the free
+//    tier — plenty for field use.
 //  - No expiration, no card. Google may use free-tier prompts to improve
 //    their products, so avoid submitting anything sensitive.
 //  - If you ever outgrow this, enabling billing on the same project raises
 //    the limits — nothing else in this function needs to change.
 
-// Model is configurable via env var so a future Google rename/retirement
-// (this has already happened once — see README) doesn't require a new
-// deploy, just updating GEMINI_MODEL in Netlify. Defaults to a pinned,
-// stable model ID rather than a "-latest" alias: an alias sounds safer
-// but actually drifts forward automatically as Google ships new models,
-// and can silently end up pointing at a frontier-tier model with
-// different (or no) free-tier access — which is almost certainly why
-// this stopped responding entirely rather than just occasionally.
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+// Model is configurable via env var so a Google rename/retirement doesn't
+// require a new deploy, just updating GEMINI_MODEL in Netlify. Defaults to
+// a pinned, stable model ID rather than a "-latest" alias: an alias sounds
+// safer but actually drifts forward automatically as Google ships new
+// models, and can silently end up pointing at a frontier-tier model with
+// different (or no) free-tier access.
+//
+// Deprecation history (update this list each time Google retires the
+// pinned model, so the next person hitting this knows it's happened
+// before and isn't a one-off):
+//   - gemini-2.5-flash: retired for new users as of ~Sept 2026. Google's
+//     own API error on retirement named the exact replacement below.
+//   - Current pin: gemini-3.6-flash (GA as of July 2026). Note Gemini
+//     3.7 Flash already exists as a newer option as of Aug 2026, but
+//     Google's retirement error specifically pointed to 3.6, so that's
+//     what's pinned here rather than guessing forward to something
+//     untested against this key's actual tier/quota.
+//   - Verify free-tier availability for whatever model is pinned at
+//     https://aistudio.google.com before relying on it for field use —
+//     paid-only pricing exists alongside a free tier for these models,
+//     and tier access can change independently of the model itself.
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 exports.handler = async function (event) {
   if (event.httpMethod !== "POST") {
