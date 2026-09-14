@@ -10,7 +10,15 @@
 // live data, not app shell, and a stale cached response for something
 // like species classification would be actively misleading.
 
-const CACHE_VERSION = 'ecosynthra-shell-v1';
+// v2: app shell switched from cache-first to network-first. Cache-first
+// meant every load served whatever was cached IMMEDIATELY, with a fresh
+// copy only fetched quietly in the background for next time \u2014 so an
+// update deployed to Netlify wouldn't actually be seen until the SECOND
+// reload after it went live, and a mobile "hard refresh" doesn't reliably
+// bypass an active service worker the way it does in desktop DevTools.
+// That's a real cost for an app under active iteration; offline support
+// is still fully preserved via the catch() fallback below.
+const CACHE_VERSION = 'ecosynthra-shell-v2';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -56,19 +64,19 @@ self.addEventListener('fetch', (event) => {
   if (url.pathname.startsWith('/.netlify/functions/')) return;
 
   if (isAppShellRequest(url)) {
-    // App shell: cache-first, so the app opens instantly and works offline,
-    // with a background refresh to pick up the next deploy.
+    // App shell: network-first. Always try to get the latest deploy when
+    // online; only serve the cached copy if the network request actually
+    // fails (offline, or a flaky connection in the field). This is the
+    // one place staleness has a real cost \u2014 this file changes often
+    // during active development \u2014 so freshness wins over instant load.
     event.respondWith(
-      caches.match(req).then((cached) => {
-        const network = fetch(req).then((res) => {
-          if (res && res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
-          }
-          return res;
-        }).catch(() => cached);
-        return cached || network;
-      })
+      fetch(req).then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE_VERSION).then((cache) => cache.put(req, copy));
+        }
+        return res;
+      }).catch(() => caches.match(req))
     );
     return;
   }

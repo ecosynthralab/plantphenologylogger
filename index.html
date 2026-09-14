@@ -898,7 +898,10 @@ function openSpModal(id){
         <div style="font-size:11.5px;color:var(--ink-soft);line-height:1.45;margin:6px 0 10px;">Renaming re-runs POWO/GBIF classification against the new name and renames every observation already logged under "${s.sci.replace(/"/g,'&quot;')}" to match.</div>
         <button class="log-this-btn" id="renameSaveBtn" style="margin-top:0;">Save name</button>
         <button class="log-this-btn" id="renameCancelBtn" style="background:transparent;color:var(--ink-soft);border:1px solid var(--line);margin-top:8px;">Cancel</button>
-      </div>` : ''}
+      </div>
+      <button class="log-this-btn" id="changePhotoBtn" style="background:var(--copper);margin-top:10px;">${s.img ? 'Change cover photo' : 'Add a cover photo'}</button>
+      <input type="file" id="changePhotoInput" accept="image/*" style="display:none;">
+      <div id="changePhotoStatus" class="status-msg" style="text-align:left;"></div>` : ''}
       <button class="log-this-btn" id="logThisBtn">Log an observation for this species</button>
       ${s.userLogged ? '<button class="log-this-btn" id="retryClassifyBtn" style="background:var(--copper);margin-top:10px;">Retry classification</button>' : ''}
       ${s.userLogged ? '<button class="log-this-btn" id="deleteSpeciesBtn" style="background:transparent;color:var(--nonnative);border:1px solid var(--nonnative);margin-top:10px;">Delete from compendium</button>' : '<div style="margin-top:14px;font-size:11px;color:var(--ink-soft);font-family:var(--mono);">Built-in reference entry \u2014 not deletable, only field-logged species can be removed.</div>'}
@@ -911,6 +914,38 @@ function openSpModal(id){
   if (retryBtn) retryBtn.addEventListener('click', ()=> retryClassification(s));
   const deleteBtn = document.getElementById('deleteSpeciesBtn');
   if (deleteBtn) deleteBtn.addEventListener('click', ()=> deleteSpecies(s));
+  const changePhotoBtn = document.getElementById('changePhotoBtn');
+  const changePhotoInput = document.getElementById('changePhotoInput');
+  if (changePhotoBtn) changePhotoBtn.addEventListener('click', ()=> changePhotoInput.click());
+  if (changePhotoInput) changePhotoInput.addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    if (!file) return;
+    const statusEl = document.getElementById('changePhotoStatus');
+    changePhotoBtn.disabled = true;
+    statusEl.textContent = 'Processing photo\u2026';
+    statusEl.className = 'status-msg';
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const resized = await makeThumbnail(ev.target.result, 640, 0.82);
+      if (!resized) {
+        statusEl.textContent = 'Could not read that image \u2014 try a different file.';
+        statusEl.className = 'status-msg err';
+        changePhotoBtn.disabled = false;
+        return;
+      }
+      await withSpeciesLock(() => {
+        const list = getUserSpecies();
+        const idx = list.findIndex(x => x.id === s.id);
+        if (idx === -1) return;
+        list[idx] = { ...list[idx], img: resized, imgIsThumbnailFallback: false };
+        saveUserSpecies(list);
+        supabaseUpsert('species', list[idx]);
+      });
+      renderSpFilters(); renderSpGrid();
+      openSpModal(s.id); // re-render the modal with the new photo
+    };
+    reader.readAsDataURL(file);
+  });
   const renameBtn = document.getElementById('renameSpBtn');
   if (renameBtn) renameBtn.addEventListener('click', ()=>{
     document.getElementById('renameSpForm').style.display = 'block';
@@ -1631,22 +1666,25 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
     }
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
   } else if (currentPhotoCompendium) {
-    // Species already has a compendium entry \u2014 but if that entry has no
-    // photo yet and this save brought one, attach it now instead of
-    // requiring a separate manual fix. Handles exactly the case where an
-    // earlier save created the entry (e.g. via "Repair missing species"
-    // or a race with another concurrent save) with no image attached.
+    // Species already has a compendium entry. Attach this photo if the
+    // entry has none yet, OR if its current photo is only a low-res
+    // thumbnail recovered by "Repair missing species" (flagged as such) \u2014
+    // a proper field photo should always win over that fallback.
     const backfilled = await withSpeciesLock(() => {
       const list = getUserSpecies();
       const key = normalizeSciKey(speciesName);
-      const idx = list.findIndex(s => normalizeSciKey(s.sci) === key && !s.img);
+      const idx = list.findIndex(s => normalizeSciKey(s.sci) === key && (!s.img || s.imgIsThumbnailFallback));
       if (idx === -1) return false;
-      list[idx] = { ...list[idx], img: currentPhotoCompendium };
+      const wasFallback = !!list[idx].imgIsThumbnailFallback;
+      list[idx] = { ...list[idx], img: currentPhotoCompendium, imgIsThumbnailFallback: false };
       saveUserSpecies(list);
       supabaseUpsert('species', list[idx]);
-      return true;
+      return wasFallback ? 'upgraded' : 'filled';
     });
-    if (backfilled) {
+    if (backfilled === 'upgraded') {
+      statusEl.textContent = 'Saved. Replaced the recovered thumbnail on ' + speciesName + ' with this proper photo.';
+      renderSpFilters(); renderSpGrid();
+    } else if (backfilled === 'filled') {
       statusEl.textContent = 'Saved. Also attached this photo to the existing ' + speciesName + ' compendium entry, which had none.';
       renderSpFilters(); renderSpGrid();
     }
@@ -1965,11 +2003,21 @@ document.getElementById('repair-species-btn').addEventListener('click', async ()
     btn.textContent = `Adding ${addedCount + 1} / ${missing.length}\u2026`;
     // Prefer the most recent observation of this species that actually
     // has a saved thumbnail, so the new card isn't blank if a photo
-    // exists anywhere in the log for it.
+    // exists anywhere in the log for it. Flagged as a fallback so a
+    // better photo logged later can still replace it (see the save
+    // handler's backfill step) rather than being permanently stuck at
+    // thumbnail quality.
     const photoMatch = getPhotosForSpecies(name)[0];
     try {
-      await classifyAndAddSpecies(name, photoMatch ? photoMatch.thumb : null);
-      if (photoMatch) addedWithPhoto++;
+      const added = await classifyAndAddSpecies(name, photoMatch ? photoMatch.thumb : null);
+      if (photoMatch) {
+        addedWithPhoto++;
+        await withSpeciesLock(() => {
+          const list = getUserSpecies();
+          const idx = list.findIndex(x => x.id === added.id);
+          if (idx !== -1) { list[idx] = { ...list[idx], imgIsThumbnailFallback: true }; saveUserSpecies(list); supabaseUpsert('species', list[idx]); }
+        });
+      }
       addedCount++;
     } catch (e) {
       addFailed++;
@@ -1981,7 +2029,8 @@ document.getElementById('repair-species-btn').addEventListener('click', async ()
   // before this photo-recovery logic existed, or by an earlier race-
   // condition-clobbered save) but still have no photo. The "Field photos
   // over time" carousel already finds these live from observations, so
-  // if it can find one, the cover photo can use the same one.
+  // if it can find one, the cover photo can use the same one. Also
+  // flagged as a fallback for the same upgrade-later reason as above.
   statusEl.textContent = 'Checking existing compendium entries for missing photos\u2026';
   const backfillTargets = getUserSpecies().filter(s => !s.img);
   let backfilled = 0;
@@ -1992,7 +2041,7 @@ document.getElementById('repair-species-btn').addEventListener('click', async ()
       const list = getUserSpecies();
       const idx = list.findIndex(x => x.id === s.id);
       if (idx === -1) return;
-      list[idx] = { ...list[idx], img: photoMatch.thumb };
+      list[idx] = { ...list[idx], img: photoMatch.thumb, imgIsThumbnailFallback: true };
       saveUserSpecies(list);
       supabaseUpsert('species', list[idx]);
     });
