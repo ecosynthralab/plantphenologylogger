@@ -146,6 +146,11 @@ async function safeFetchJson(url, timeoutMs) {
 
 // Best-effort local-name lookup via Wikidata SPARQL (official, documented).
 // Never throws, never blocks the main result if it fails or finds nothing.
+// Returns two distinct things from the same query: an English common name
+// (commonName) and any Yoruba/Igbo/Hausa names (names) \u2014 previously the
+// query asked Wikidata for "en" results too but then discarded them,
+// leaving the app with no real common name at all (every compendium entry
+// ended up with common === sci, since the client had nothing else to use).
 async function lookupLocalNames(scientificName) {
   const query = `
     SELECT ?name ?nameLang WHERE {
@@ -158,17 +163,23 @@ async function lookupLocalNames(scientificName) {
   `;
   const url = "https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(query);
   const result = await safeFetchJson(url, 6000);
-  if (!result.ok) return { checked: false, names: [], note: "Wikidata lookup failed: " + result.reason };
+  if (!result.ok) return { checked: false, names: [], commonName: null, note: "Wikidata lookup failed: " + result.reason };
   const bindings = (result.data.results && result.data.results.bindings) || [];
   const names = bindings
     .filter(b => ["yo", "ig", "ha"].includes(b.nameLang.value))
     .map(b => `${b.name.value} (${b.nameLang.value})`);
+  const englishNames = [...new Set(bindings.filter(b => b.nameLang.value === "en").map(b => b.name.value))];
+  const commonName = englishNames[0] || null;
+  const noteParts = [];
+  if (names.length) noteParts.push("Local names found on Wikidata: " + [...new Set(names)].join(", "));
+  if (commonName) noteParts.push("English common name: " + commonName + (englishNames.length > 1 ? " (also: " + englishNames.slice(1).join(", ") + ")" : ""));
   return {
     checked: true,
     names: [...new Set(names)],
-    note: names.length
-      ? "Local names found on Wikidata: " + [...new Set(names)].join(", ")
-      : "No Yoruba/Igbo/Hausa common names found on Wikidata for this taxon \u2014 coverage for West African plants is generally sparse there; check Burkill's Useful Plants of West Tropical Africa or NMPPDB instead."
+    commonName,
+    note: noteParts.length
+      ? noteParts.join(" \u2014 ")
+      : "No Yoruba/Igbo/Hausa or English common names found on Wikidata for this taxon \u2014 coverage for West African plants is generally sparse there; check Burkill's Useful Plants of West Tropical Africa or NMPPDB instead."
   };
 }
 
@@ -186,6 +197,7 @@ exports.handler = async function (event) {
     queriedName: rawName, matchedName: null, family: null,
     status: "unknown", statusLabel: "Unconfirmed", origin: "\u2014",
     note: "Automated lookup could not resolve this name with confidence \u2014 left unconfirmed for manual review.",
+    commonName: null,
     localNames: [],
     sources: {
       curated: { checked: false, note: "Not in the curated West African species table" },
@@ -261,11 +273,12 @@ exports.handler = async function (event) {
     }
   }
 
-  // ---- 3. Wikidata local names (best-effort, never blocks) ----
+  // ---- 3. Wikidata local names + English common name (best-effort, never blocks) ----
   try {
     const nameForWikidata = result.matchedName || rawName;
     const wd = await lookupLocalNames(nameForWikidata);
     result.localNames = wd.names;
+    result.commonName = wd.commonName;
     result.sources.wikidata = { checked: wd.checked, note: wd.note };
   } catch (e) {
     result.sources.wikidata = { checked: false, note: "Wikidata lookup errored: " + e.message };

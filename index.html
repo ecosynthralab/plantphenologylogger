@@ -570,28 +570,39 @@ function setSyncStatus(state, text) {
   el.textContent = text;
   el.style.color = state === 'error' ? 'var(--nonnative)' : state === 'live' ? 'var(--native)' : '';
 }
+let hydrateWarning = null; // set by initSupabaseSync if a table failed to pull; read by supabaseSubscribeRealtime so its own success status can't silently overwrite this
 
 // Pull everything down from Supabase and merge into local storage.
 // Observations dedupe by id. Species dedupe by normalized scientific
 // name, since two devices can independently auto-classify the same new
 // species with different generated ids.
+//
+// Reports failures explicitly instead of only console.warn-ing them:
+// this was previously a genuinely silent failure path (see incident:
+// species table carries full base64 photos per row, unlike the small
+// thumbnails on observations, so a slow connection can time out on
+// species specifically while observations succeeds \u2014 with nothing in
+// the UI showing that anything went wrong).
 async function supabaseHydrate() {
   if (!SUPABASE_ENABLED) return { observations: 0, species: 0 };
   let pulledObs = 0, pulledSpecies = 0;
+  let obsFailReason = null, spFailReason = null;
 
   try {
     const { data: remoteObs, error: obsErr } = await supabaseClient.from('observations').select('*');
-    if (!obsErr && remoteObs) {
+    if (obsErr) { obsFailReason = obsErr.message || 'unknown error'; }
+    else if (remoteObs) {
       remoteObs.forEach(row => {
         const key = 'obs:' + row.id;
         if (!lsGet(key)) { lsSet(key, row); pulledObs++; }
       });
     }
-  } catch (e) { console.warn('Supabase hydrate (observations) failed:', e.message); }
+  } catch (e) { obsFailReason = e.message; console.warn('Supabase hydrate (observations) failed:', e.message); }
 
   try {
     const { data: remoteSpecies, error: spErr } = await supabaseClient.from('species').select('*');
-    if (!spErr && remoteSpecies) {
+    if (spErr) { spFailReason = spErr.message || 'unknown error'; }
+    else if (remoteSpecies) {
       const local = getUserSpecies();
       const localKeys = new Set(local.map(s => normalizeSciKey(s.sci)));
       remoteSpecies.forEach(row => {
@@ -600,9 +611,9 @@ async function supabaseHydrate() {
       });
       if (pulledSpecies > 0) saveUserSpecies(local);
     }
-  } catch (e) { console.warn('Supabase hydrate (species) failed:', e.message); }
+  } catch (e) { spFailReason = e.message; console.warn('Supabase hydrate (species) failed:', e.message); }
 
-  return { observations: pulledObs, species: pulledSpecies };
+  return { observations: pulledObs, species: pulledSpecies, obsFailReason, spFailReason };
 }
 
 function normalizeSciKey(sci) {
@@ -649,7 +660,7 @@ function supabaseSubscribeRealtime() {
       // is working — the earlier version of this app never checked it,
       // so a failed realtime connection looked identical to a working one.
       if (status === 'SUBSCRIBED') {
-        setSyncStatus('live', 'Cloud sync: live');
+        setSyncStatus(hydrateWarning ? 'error' : 'live', hydrateWarning || 'Cloud sync: live');
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         setSyncStatus('error', 'Cloud sync: connected, but live updates aren\u2019t working (' + status + ') \u2014 saves still push/pull on reload');
       } else if (status === 'CLOSED') {
@@ -1085,8 +1096,16 @@ populateSpeciesDropdown();
   await supabaseConfigReady;
   if (!SUPABASE_ENABLED) return;
   setSyncStatus('', 'Cloud sync: connecting\u2026');
-  const { observations, species } = await supabaseHydrate();
-  setSyncStatus('', 'Cloud sync: pulled data, connecting live updates\u2026');
+  const { observations, species, obsFailReason, spFailReason } = await supabaseHydrate();
+  if (obsFailReason || spFailReason) {
+    const parts = [];
+    if (obsFailReason) parts.push('observations (' + obsFailReason + ')');
+    if (spFailReason) parts.push('species (' + spFailReason + ')');
+    hydrateWarning = 'Cloud sync: connected, but couldn\u2019t pull ' + parts.join(' and ') + ' \u2014 tap Refresh on Log & Export to retry';
+    setSyncStatus('error', hydrateWarning);
+  } else {
+    setSyncStatus('', 'Cloud sync: pulled data, connecting live updates\u2026');
+  }
   if (observations > 0 || species > 0) {
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
     if (document.getElementById('view-log').classList.contains('active')) refreshLog();
@@ -1160,7 +1179,7 @@ async function renameSpeciesEntry(s, newCommon, newSci) {
     if (i === -1) return -1;
     list[i] = {
       ...list[i],
-      common: newCommon || newSci,
+      common: newCommon || (result && result.commonName) || newSci,
       sci: newSci,
       family: (result && result.family) || list[i].family,
       status: (result && result.status) || list[i].status,
@@ -1216,7 +1235,7 @@ async function classifyAndAddSpecies(name, photoDataUri) {
 
   const newSpecies = {
     id: 'user_' + uid(),
-    common: name,
+    common: result.commonName || name,
     sci: result.matchedName || name,
     family: result.family || 'Family undetermined',
     status: result.status || 'unknown',
@@ -2048,6 +2067,38 @@ document.getElementById('repair-species-btn').addEventListener('click', async ()
     backfilled++;
   }
 
+  // Third pass: entries whose common name is just a copy of the
+  // scientific name \u2014 the historical symptom of classify-species.js not
+  // yet returning a real English common name (fixed now, but every
+  // species classified before that fix still has this gap). Re-running
+  // classification is the only way to backfill it; skip anything with no
+  // real sci name to look up.
+  statusEl.textContent = 'Checking for missing common names\u2026';
+  const nameTargets = getUserSpecies().filter(s =>
+    normalizeSciKey(s.common) === normalizeSciKey(s.sci) &&
+    s.sci && !/^Unidentified specimen/.test(s.sci) && s.sci !== 'Genus undetermined'
+  );
+  let namesFixed = 0;
+  for (const s of nameTargets) {
+    let result;
+    try {
+      const res = await fetch('/.netlify/functions/classify-species', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name: s.sci })
+      });
+      result = await res.json();
+    } catch (e) { continue; }
+    if (!result || !result.commonName) continue;
+    await withSpeciesLock(() => {
+      const list = getUserSpecies();
+      const idx = list.findIndex(x => x.id === s.id);
+      if (idx === -1) return;
+      list[idx] = { ...list[idx], common: result.commonName, localNames: result.localNames && result.localNames.length ? result.localNames : list[idx].localNames };
+      saveUserSpecies(list);
+      supabaseUpsert('species', list[idx]);
+    });
+    namesFixed++;
+  }
+
   btn.disabled = false;
   btn.textContent = 'Repair missing species';
   renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
@@ -2057,6 +2108,7 @@ document.getElementById('repair-species-btn').addEventListener('click', async ()
     ? `added ${addedCount} missing species (${addedWithPhoto} with a recovered photo)`
     : `added ${addedCount} of ${missing.length} missing species (${addFailed} failed \u2014 check console)`);
   if (backfillTargets.length) parts.push(`backfilled photos on ${backfilled} of ${backfillTargets.length} existing entries that had none`);
+  if (nameTargets.length) parts.push(`found a real common name for ${namesFixed} of ${nameTargets.length} entries that only had the scientific name`);
   statusEl.style.color = addFailed === 0 ? 'var(--native)' : 'var(--nonnative)';
   statusEl.textContent = parts.length ? ('Done \u2014 ' + parts.join('; ') + '.') : 'Nothing to repair \u2014 every logged species has a compendium entry and photo already.';
 });
