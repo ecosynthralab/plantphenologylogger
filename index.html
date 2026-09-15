@@ -676,7 +676,19 @@ function lsGet(key) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; }
 }
 function lsSet(key, value) {
-  try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (e) { return false; }
+  try { localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch (e) {
+    // A quota-exceeded write here used to fail completely silently: the
+    // caller (e.g. saveUserSpecies) would report success in memory, but
+    // nothing was actually persisted, so the very next render read the
+    // old data back with zero indication anything had gone wrong. This
+    // is exactly what happened when 37 newly-hydrated species (each
+    // carrying a full embedded photo) pushed total localStorage usage
+    // over the browser's per-origin limit.
+    console.error('localStorage write failed for key "' + key + '":', e.name, e.message);
+    setSyncStatus('error', 'Storage full \u2014 could not save "' + key + '" (' + e.name + '). Some data may not persist on this device; try clearing old exports or ask about storage cleanup.');
+    return false;
+  }
 }
 function lsDelete(key) { try { localStorage.removeItem(key); return true; } catch (e) { return false; } }
 function lsListKeys(prefix) {
@@ -791,6 +803,16 @@ const spPhenoMeta = {
 };
 const spSourceLabels = { curated:"Curated table", powo:"Kew POWO", gbif:"GBIF", inaturalist:"iNaturalist", fwta:"FWTA", wikidata:"Wikidata (local names)" };
 
+// Guards against any species row whose status/phenophase doesn't exactly
+// match one of the keys above — plausible for entries carrying data from
+// much earlier versions of this app (different naming conventions, a
+// null value, a typo). Without this, spStatusMeta[s.status] returning
+// undefined and then having .cls/.label read off it throws inside
+// renderSpGrid's list.map(), which aborts the WHOLE grid render with
+// nothing shown for it \u2014 not just skipping the one bad card.
+function safeStatusMeta(status) { return spStatusMeta[status] || spStatusMeta.unknown; }
+function safePhenoMeta(phenophase) { return spPhenoMeta[phenophase] || spPhenoMeta.unrecorded; }
+
 function spImgSrc(s) {
   if (s.img && SPECIES_IMG[s.img]) return "data:image/jpeg;base64," + SPECIES_IMG[s.img];
   if (s.img && typeof s.img === 'string' && s.img.startsWith('data:')) return s.img;
@@ -832,29 +854,38 @@ function renderSpGrid(){
     grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">No specimens match.</div>';
     return;
   }
-  grid.innerHTML = list.map(s => `
-    <div class="sp-card" data-id="${s.id}">
-      <div class="sp-photo">
-        <img src="${spImgSrc(s)}" alt="${s.common}" loading="lazy">
-        <div class="sp-stamp ${s.userLogged ? 'userlogged' : spStatusMeta[s.status].cls}">${s.userLogged ? 'New \u00b7 ' + spStatusMeta[s.status].label : spStatusMeta[s.status].label}</div>
-        <div class="sp-pheno-dot" style="background:${spPhenoMeta[s.phenophase||'unrecorded'].color}" title="${spPhenoMeta[s.phenophase||'unrecorded'].label}"></div>
+  try {
+    grid.innerHTML = list.map(s => {
+      const statusMeta = safeStatusMeta(s.status);
+      const phenoMeta = safePhenoMeta(s.phenophase);
+      return `
+      <div class="sp-card" data-id="${s.id}">
+        <div class="sp-photo">
+          <img src="${spImgSrc(s)}" alt="${s.common}" loading="lazy">
+          <div class="sp-stamp ${s.userLogged ? 'userlogged' : statusMeta.cls}">${s.userLogged ? 'New \u00b7 ' + statusMeta.label : statusMeta.label}</div>
+          <div class="sp-pheno-dot" style="background:${phenoMeta.color}" title="${phenoMeta.label}"></div>
+        </div>
+        <div class="sp-label">
+          <div class="sp-common">${s.common}</div>
+          <div class="sp-sci">${s.sci}</div>
+        </div>
       </div>
-      <div class="sp-label">
-        <div class="sp-common">${s.common}</div>
-        <div class="sp-sci">${s.sci}</div>
-      </div>
-    </div>
-  `).join('');
-  grid.querySelectorAll('.sp-card').forEach(card=>{
-    card.addEventListener('click', ()=> openSpModal(card.dataset.id));
-  });
+    `;
+    }).join('');
+    grid.querySelectorAll('.sp-card').forEach(card=>{
+      card.addEventListener('click', ()=> openSpModal(card.dataset.id));
+    });
+  } catch (e) {
+    console.error('renderSpGrid failed \u2014 a species entry likely has an unexpected field value:', e.message);
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;">Could not display the species grid (data is safe) \u2014 check console for details.</div>';
+  }
 }
 
 function openSpModal(id){
   const s = allSpecies().find(x=>x.id===id);
   if(!s) return;
-  const meta = spStatusMeta[s.status];
-  const pm = spPhenoMeta[s.phenophase || 'unrecorded'];
+  const meta = safeStatusMeta(s.status);
+  const pm = safePhenoMeta(s.phenophase);
   const modal = document.getElementById('spModalContent');
   const sourceRows = Object.keys(s.sources||{}).map(k=>{
     const src = s.sources[k];
@@ -937,7 +968,7 @@ function openSpModal(id){
     statusEl.className = 'status-msg';
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const resized = await makeThumbnail(ev.target.result, 640, 0.82);
+      const resized = await makeThumbnail(ev.target.result, 400, 0.65);
       if (!resized) {
         statusEl.textContent = 'Could not read that image \u2014 try a different file.';
         statusEl.className = 'status-msg err';
@@ -1424,7 +1455,7 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
     document.getElementById('plantIdBtn').disabled = false;
     document.getElementById('photoStatus').textContent = 'Photo attached.';
     currentPhotoThumb = await makeThumbnail(dataUrl, 140);
-    currentPhotoCompendium = await makeThumbnail(dataUrl, 640, 0.82);
+    currentPhotoCompendium = await makeThumbnail(dataUrl, 400, 0.65);
   };
   reader.readAsDataURL(file);
 
