@@ -795,9 +795,17 @@ function getUserSpecies() {
 function saveUserSpecies(list) {
   const stripped = list.map(s => {
     if (s.img) {
-      lsSet('speciesimg:' + s.id, s.img); // best-effort \u2014 failure here must not block the metadata save below
-      const { img, ...rest } = s;
-      return rest;
+      const photoSaved = lsSet('speciesimg:' + s.id, s.img);
+      if (photoSaved) {
+        const { img, ...rest } = s;
+        return rest;
+      }
+      // Photo-key write failed (storage pressure) \u2014 keep the photo inline
+      // rather than discarding it. This is the bug that was here before:
+      // img was stripped unconditionally regardless of whether the write
+      // actually succeeded, silently throwing away real photos the
+      // moment storage got tight partway through saving a batch.
+      return s;
     }
     return s;
   });
