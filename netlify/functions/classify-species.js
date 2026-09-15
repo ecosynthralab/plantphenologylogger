@@ -199,6 +199,7 @@ exports.handler = async function (event) {
     note: "Automated lookup could not resolve this name with confidence \u2014 left unconfirmed for manual review.",
     commonName: null,
     localNames: [],
+    classification: null,
     sources: {
       curated: { checked: false, note: "Not in the curated West African species table" },
       gbif: { checked: false, note: "Not queried" },
@@ -221,6 +222,22 @@ exports.handler = async function (event) {
     result.sources.fwta = curated.fwtaChecked
       ? { checked: true, note: "FWTA citation included in the note above." }
       : { checked: false, note: "Not individually verified against FWTA text yet." };
+
+    // Curated matches skip the full GBIF distribution lookup (status is
+    // already hand-verified), but classification is still worth having \u2014
+    // one lightweight match call, no distribution fetch needed.
+    try {
+      const classifyUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(result.matchedName) + "&kingdom=Plantae";
+      const classifyMatch = await safeFetchJson(classifyUrl, 7000);
+      if (classifyMatch.ok && classifyMatch.data && classifyMatch.data.usageKey) {
+        const g = classifyMatch.data;
+        result.classification = {
+          kingdom: g.kingdom || null, phylum: g.phylum || null, class: g.class || null,
+          order: g.order || null, family: g.family || result.family, genus: g.genus || null,
+          species: g.species || result.matchedName
+        };
+      }
+    } catch (e) { /* classification is a nice-to-have here; curated status/family/note above already stand on their own */ }
   } else {
     // ---- 2. GBIF fallback (official API) ----
     const cleanName = rawName.replace(/\(.*?\)/g, "").replace(/\bcf\.?\b/gi, "").trim();
@@ -234,6 +251,19 @@ exports.handler = async function (event) {
       if (gbif && (gbif.matchType === "EXACT" || gbif.matchType === "FUZZY") && gbif.usageKey) {
         result.matchedName = gbif.canonicalName || gbif.scientificName;
         result.family = gbif.family || null;
+        // Same GBIF match response already carries the full classification
+        // ladder \u2014 no extra request needed. GBIF's backbone doesn't track
+        // "Subclass" (Kew POWO does), so that rank is left out rather than
+        // guessed at.
+        result.classification = {
+          kingdom: gbif.kingdom || null,
+          phylum: gbif.phylum || null,
+          class: gbif.class || null,
+          order: gbif.order || null,
+          family: gbif.family || null,
+          genus: gbif.genus || null,
+          species: gbif.species || result.matchedName || null
+        };
 
         const distUrl = "https://api.gbif.org/v1/species/" + gbif.usageKey + "/distributions?limit=100";
         const distResult = await safeFetchJson(distUrl, 7000);
