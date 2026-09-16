@@ -26,6 +26,7 @@ const NIGERIA_HINTS = [
   "s. tropical africa", "c. tropical africa", "e. tropical africa"
 ];
 const LOCAL_LANGUAGES = { ig: "Igbo", yo: "Yoruba", ha: "Hausa" };
+const APP_USER_AGENT = "Ecosynthra-Phenology-Logger/1.0 (species classification; contact site maintainer)";
 
 // ---------------------------------------------------------------------
 // CURATED STATIC LOOKUP — hand-verified, sources cited in each note.
@@ -129,7 +130,10 @@ async function safeFetchJson(url, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 8000);
   try {
-    const res = await fetch(url, { signal: controller.signal, headers: { "Accept": "application/json" } });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: { "Accept": "application/json", "User-Agent": APP_USER_AGENT }
+    });
     clearTimeout(timer);
     const contentType = res.headers.get("content-type") || "";
     const text = await res.text();
@@ -164,7 +168,11 @@ async function lookupLocalNames(scientificName) {
   `;
   const url = "https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(query);
   const result = await safeFetchJson(url, 6000);
-  if (!result.ok) return { checked: false, names: [], namesByLanguage: { ig: [], yo: [], ha: [] }, commonName: null, note: "Wikidata lookup failed: " + result.reason };
+  if (!result.ok) {
+    const fallback = await lookupWikidataApiNames(scientificName);
+    if (fallback.checked) return fallback;
+    return { checked: false, names: [], namesByLanguage: { ig: [], yo: [], ha: [] }, commonName: null, note: "Wikidata lookup failed: " + result.reason + "; API fallback: " + fallback.note };
+  }
   const bindings = (result.data.results && result.data.results.bindings) || [];
   const names = bindings
     .filter(b => ["yo", "ig", "ha"].includes(b.nameLang.value))
@@ -187,6 +195,36 @@ async function lookupLocalNames(scientificName) {
     note: noteParts.length
       ? noteParts.join(" \u2014 ")
       : "No Yoruba/Igbo/Hausa or English common names found on Wikidata for this taxon \u2014 coverage for West African plants is generally sparse there; check Burkill's Useful Plants of West Tropical Africa or NMPPDB instead."
+  };
+}
+
+async function lookupWikidataApiNames(scientificName) {
+  const searchUrl = "https://www.wikidata.org/w/api.php?action=wbsearchentities&search=" + encodeURIComponent(scientificName) + "&language=en&format=json&limit=1";
+  const search = await safeFetchJson(searchUrl, 6000);
+  const entityId = search.ok && search.data.search && search.data.search[0] && search.data.search[0].id;
+  if (!entityId) return { checked: false, names: [], namesByLanguage: { ig: [], yo: [], ha: [] }, commonName: null, note: search.ok ? "Wikidata API found no matching taxon." : search.reason };
+
+  const entityUrl = "https://www.wikidata.org/w/api.php?action=wbgetentities&ids=" + encodeURIComponent(entityId) + "&props=claims|labels&languages=en|ig|yo|ha&format=json";
+  const entityResult = await safeFetchJson(entityUrl, 6000);
+  const entity = entityResult.ok && entityResult.data.entities && entityResult.data.entities[entityId];
+  if (!entity) return { checked: false, names: [], namesByLanguage: { ig: [], yo: [], ha: [] }, commonName: null, note: "Wikidata API entity lookup failed." };
+
+  const namesByLanguage = { ig: [], yo: [], ha: [] };
+  const claims = entity.claims && entity.claims.P1843 || [];
+  claims.forEach(claim => {
+    const value = claim.mainsnak && claim.mainsnak.datavalue && claim.mainsnak.datavalue.value;
+    if (!value || typeof value !== "object" || !namesByLanguage[value.language]) return;
+    if (value.text) namesByLanguage[value.language].push(value.text);
+  });
+  Object.keys(namesByLanguage).forEach(lang => { namesByLanguage[lang] = [...new Set(namesByLanguage[lang])]; });
+  const commonName = entity.labels && entity.labels.en ? entity.labels.en.value : null;
+  const names = Object.keys(namesByLanguage).flatMap(lang => namesByLanguage[lang].map(name => `${name} (${lang})`));
+  return {
+    checked: true,
+    names,
+    namesByLanguage,
+    commonName,
+    note: names.length ? "Wikidata API fallback found regional names." : "Wikidata API found the taxon but no Igbo, Yoruba, or Hausa P1843 names."
   };
 }
 

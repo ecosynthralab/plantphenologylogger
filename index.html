@@ -529,7 +529,7 @@ async function supabaseWrite(table, action, payload) {
       setSyncStatus('error', 'Cloud sync: ' + action + ' failed (' + data.error + ') \u2014 saved locally only');
       return { ok: false, error: data.error };
     }
-    return { ok: true };
+    return { ok: true, warning: data.warning || null };
   } catch (e) {
     console.warn('Cloud sync failed (data is still saved locally):', e.message);
     setSyncStatus('error', 'Cloud sync: save failed (' + e.message + ') \u2014 saved locally only');
@@ -561,14 +561,19 @@ function remoteIsNewer(remote, local) {
 }
 
 async function supabaseUpsert(table, row) {
+  const photoFailures = [];
   for (const field of ['thumb', 'img']) {
     if (row && row[field]) {
       const photoResult = await supabasePhotoWrite('upsert', row[field]);
-      if (!photoResult.ok) return photoResult;
+      if (!photoResult.ok) photoFailures.push(field + ': ' + photoResult.error);
     }
   }
   const result = await supabaseWrite(table, 'upsert', { row });
-  if (result.ok && row && row.id) markPushed(table, row.id);
+  if (result.ok && row && row.id && photoFailures.length === 0) markPushed(table, row.id);
+  if (result.warning) setSyncStatus('error', result.warning);
+  if (photoFailures.length) {
+    setSyncStatus('error', 'Cloud metadata synced, but photo sync failed: ' + photoFailures.join('; '));
+  }
   return result;
 }
 async function supabaseDelete(table, id) {

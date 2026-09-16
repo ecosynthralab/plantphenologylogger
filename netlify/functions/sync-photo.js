@@ -10,12 +10,23 @@ function response(body) {
 }
 
 async function ensureBucket(supabaseUrl, headers) {
+  const existing = await fetch(supabaseUrl + '/storage/v1/bucket/' + encodeURIComponent(BUCKET), {
+    method: 'GET', headers
+  });
+  if (existing.ok) return;
+  if (existing.status !== 404) {
+    const detail = (await existing.text()).slice(0, 300);
+    throw new Error('Could not inspect Supabase photo bucket: HTTP ' + existing.status + ' ' + detail);
+  }
   const res = await fetch(supabaseUrl + '/storage/v1/bucket', {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: BUCKET, name: BUCKET, public: false, file_size_limit: 8388608 })
+    body: JSON.stringify({ id: BUCKET, name: BUCKET, public: false })
   });
-  if (!res.ok && res.status !== 409) throw new Error('Could not initialize Supabase photo bucket: HTTP ' + res.status);
+  if (!res.ok && res.status !== 409) {
+    const detail = (await res.text()).slice(0, 300);
+    throw new Error('Could not initialize Supabase photo bucket: HTTP ' + res.status + ' ' + detail);
+  }
 }
 
 exports.handler = async function (event) {

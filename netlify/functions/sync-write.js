@@ -66,13 +66,27 @@ exports.handler = async function (event) {
       if (!row || typeof row !== 'object' || !row.id) {
         return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: false, error: 'row with an id is required for upsert' }) };
       }
-      const res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
+      let rowToWrite = row;
+      let res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
         method: 'POST',
         headers: { ...baseHeaders, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify(row)
+        body: JSON.stringify(rowToWrite)
       });
       if (!res.ok) {
         const text = await res.text();
+        // Older deployments may not yet have the structured regional-name
+        // column. Keep the species row syncable through the existing flat
+        // localNames field, while returning a migration warning to the UI.
+        if (table === 'species' && row.localNamesByLanguage && /localNamesByLanguage|column .* does not exist|schema cache/i.test(text)) {
+          rowToWrite = { ...row };
+          delete rowToWrite.localNamesByLanguage;
+          res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
+            method: 'POST',
+            headers: { ...baseHeaders, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify(rowToWrite)
+          });
+          if (res.ok) return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, warning: 'Species synced, but add localNamesByLanguage jsonb to Supabase to sync separate Igbo/Yoruba/Hausa fields.' }) };
+        }
         return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: false, error: 'Supabase upsert failed: HTTP ' + res.status + ' ' + text.slice(0, 300) }) };
       }
       return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true }) };
