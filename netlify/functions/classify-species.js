@@ -25,6 +25,7 @@ const NIGERIA_HINTS = [
   "guinea", "tropical africa", "trop. africa", "trop. & subtrop. africa",
   "s. tropical africa", "c. tropical africa", "e. tropical africa"
 ];
+const LOCAL_LANGUAGES = { ig: "Igbo", yo: "Yoruba", ha: "Hausa" };
 
 // ---------------------------------------------------------------------
 // CURATED STATIC LOOKUP — hand-verified, sources cited in each note.
@@ -101,7 +102,7 @@ const CURATED_SPECIES = {
     fwtaChecked: false
   },
   "sida acuta": {
-    status: "unknown", statusLabel: "Unconfirmed \u2014 broad native range needs region-level check", family: "Malvaceae",
+    status: "unknown", statusLabel: "Regional review needed \u2014 broad native range needs region-level check", family: "Malvaceae",
     origin: "POWO lists \"Tropics & Subtropics\" (broad, ambiguous at this resolution)",
     note: "POWO's native-range label is too coarse here to say native vs. introduced for Nigeria specifically \u2014 needs the underlying TDWG region list, not yet checked.",
     fwtaChecked: false
@@ -163,11 +164,16 @@ async function lookupLocalNames(scientificName) {
   `;
   const url = "https://query.wikidata.org/sparql?format=json&query=" + encodeURIComponent(query);
   const result = await safeFetchJson(url, 6000);
-  if (!result.ok) return { checked: false, names: [], commonName: null, note: "Wikidata lookup failed: " + result.reason };
+  if (!result.ok) return { checked: false, names: [], namesByLanguage: { ig: [], yo: [], ha: [] }, commonName: null, note: "Wikidata lookup failed: " + result.reason };
   const bindings = (result.data.results && result.data.results.bindings) || [];
   const names = bindings
     .filter(b => ["yo", "ig", "ha"].includes(b.nameLang.value))
     .map(b => `${b.name.value} (${b.nameLang.value})`);
+  const namesByLanguage = { ig: [], yo: [], ha: [] };
+  bindings.forEach(b => {
+    if (namesByLanguage[b.nameLang.value]) namesByLanguage[b.nameLang.value].push(b.name.value);
+  });
+  Object.keys(namesByLanguage).forEach(lang => { namesByLanguage[lang] = [...new Set(namesByLanguage[lang])]; });
   const englishNames = [...new Set(bindings.filter(b => b.nameLang.value === "en").map(b => b.name.value))];
   const commonName = englishNames[0] || null;
   const noteParts = [];
@@ -176,10 +182,45 @@ async function lookupLocalNames(scientificName) {
   return {
     checked: true,
     names: [...new Set(names)],
+    namesByLanguage,
     commonName,
     note: noteParts.length
       ? noteParts.join(" \u2014 ")
       : "No Yoruba/Igbo/Hausa or English common names found on Wikidata for this taxon \u2014 coverage for West African plants is generally sparse there; check Burkill's Useful Plants of West Tropical Africa or NMPPDB instead."
+  };
+}
+
+async function lookupGbifVernacularNames(usageKey) {
+  if (!usageKey) return { checked: false, names: [], namesByLanguage: {}, note: "No GBIF usage key available" };
+  const url = "https://api.gbif.org/v1/species/" + encodeURIComponent(usageKey) + "/vernacularNames?limit=100";
+  const result = await safeFetchJson(url, 7000);
+  if (!result.ok) return { checked: false, names: [], namesByLanguage: {}, note: "GBIF vernacular-name lookup failed: " + result.reason };
+  const rows = (result.data && result.data.results) || [];
+  const namesByLanguage = { ig: [], yo: [], ha: [] };
+  rows.forEach(row => {
+    const lang = (row.language || "").toLowerCase();
+    if (namesByLanguage[lang] && row.vernacularName) namesByLanguage[lang].push(row.vernacularName);
+  });
+  Object.keys(namesByLanguage).forEach(lang => { namesByLanguage[lang] = [...new Set(namesByLanguage[lang])]; });
+  return {
+    checked: true,
+    names: rows.map(row => row.vernacularName).filter(Boolean),
+    namesByLanguage,
+    note: rows.length ? "GBIF vernacular names checked." : "GBIF has no vernacular names for this taxon."
+  };
+}
+
+async function lookupINaturalist(scientificName) {
+  const url = "https://api.inaturalist.org/v1/taxa?q=" + encodeURIComponent(scientificName) + "&rank=species&per_page=1";
+  const result = await safeFetchJson(url, 7000);
+  if (!result.ok) return { checked: false, commonName: null, note: "iNaturalist lookup failed: " + result.reason };
+  const taxon = result.data && result.data.results && result.data.results[0];
+  if (!taxon) return { checked: true, commonName: null, note: "iNaturalist found no matching taxon." };
+  return {
+    checked: true,
+    commonName: taxon.preferred_common_name || (taxon.english_common_names || [])[0] || null,
+    matchedName: taxon.name || null,
+    note: "iNaturalist taxon match checked."
   };
 }
 
@@ -195,10 +236,11 @@ exports.handler = async function (event) {
 
   const result = {
     queriedName: rawName, matchedName: null, family: null,
-    status: "unknown", statusLabel: "Unconfirmed", origin: "\u2014",
-    note: "Automated lookup could not resolve this name with confidence \u2014 left unconfirmed for manual review.",
+    status: "unknown", statusLabel: "Regional review needed", origin: "\u2014",
+    note: "The taxon was matched, but available sources did not resolve Nigeria-specific status with enough evidence. Regional review is needed; no native/non-native claim is being invented.",
     commonName: null,
     localNames: [],
+    localNamesByLanguage: { ig: [], yo: [], ha: [] },
     classification: null,
     sources: {
       curated: { checked: false, note: "Not in the curated West African species table" },
@@ -208,6 +250,7 @@ exports.handler = async function (event) {
       wikidata: { checked: false, note: "Not queried" }
     }
   };
+  let gbifUsageKey = null;
 
   // ---- 1. Curated static table (instant, no network) ----
   const curated = lookupCurated(rawName);
@@ -231,6 +274,7 @@ exports.handler = async function (event) {
       const classifyMatch = await safeFetchJson(classifyUrl, 7000);
       if (classifyMatch.ok && classifyMatch.data && classifyMatch.data.usageKey) {
         const g = classifyMatch.data;
+        gbifUsageKey = g.usageKey;
         result.classification = {
           kingdom: g.kingdom || null, phylum: g.phylum || null, class: g.class || null,
           order: g.order || null, family: g.family || result.family, genus: g.genus || null,
@@ -249,6 +293,7 @@ exports.handler = async function (event) {
     } else {
       const gbif = gbifMatch.data;
       if (gbif && (gbif.matchType === "EXACT" || gbif.matchType === "FUZZY") && gbif.usageKey) {
+        gbifUsageKey = gbif.usageKey;
         result.matchedName = gbif.canonicalName || gbif.scientificName;
         result.family = gbif.family || null;
         // Same GBIF match response already carries the full classification
@@ -276,25 +321,26 @@ exports.handler = async function (event) {
           const anyNative = dists.find(d => (d.establishmentMeans || "").toUpperCase() === "NATIVE");
 
           if (dists.length === 0) {
-            result.sources.gbif = { checked: true, note: "Matched to " + result.matchedName + " but GBIF has no distribution/establishmentMeans records for it \u2014 left unconfirmed." };
+            result.sources.gbif = { checked: true, note: "Matched to " + result.matchedName + " but GBIF has no distribution/establishmentMeans records for it \u2014 regional status needs review." };
           } else if (nigeriaDist) {
             const means = (nigeriaDist.establishmentMeans || "UNCERTAIN").toUpperCase();
             if (means === "NATIVE") {
               result.status = "native"; result.statusLabel = "Native \u00b7 Indigenous (GBIF, automated)";
               result.note = "GBIF lists a NATIVE distribution record for Nigeria specifically.";
-            } else {
+            } else if (["INTRODUCED", "NATURALIZED", "ADVENTIVE", "INVASIVE"].includes(means)) {
               result.status = "non-native"; result.statusLabel = "Non-native \u00b7 " + means.charAt(0) + means.slice(1).toLowerCase() + " (GBIF, automated)";
               result.note = "GBIF lists a Nigeria distribution record with establishmentMeans = " + means + ".";
+            } else {
+              result.note = "GBIF has a Nigeria distribution record, but establishmentMeans = " + means + " does not establish native or introduced status.";
             }
             result.origin = anyNative ? (anyNative.locality || anyNative.country || "See GBIF record") : "Not clearly stated";
             result.sources.gbif = { checked: true, note: "GBIF distribution record found for Nigeria (establishmentMeans: " + means + ")." };
           } else if (anyNative) {
-            result.status = "non-native"; result.statusLabel = "Non-native \u00b7 Introduced (inferred, GBIF)";
-            result.origin = anyNative.locality || anyNative.country || "See GBIF record";
-            result.note = "GBIF lists native distribution elsewhere (" + result.origin + ") but no record for Nigeria \u2014 treated as introduced/absent-from-native-range.";
-            result.sources.gbif = { checked: true, note: "No Nigeria-specific record; native range found elsewhere: " + result.origin };
+              result.origin = anyNative.locality || anyNative.country || "See GBIF record";
+              result.note = "GBIF lists native distribution elsewhere (" + result.origin + ") but does not provide enough Nigeria-specific evidence to classify this as native or introduced.";
+              result.sources.gbif = { checked: true, note: "Native range found elsewhere, but absence of a Nigeria record is not treated as proof of introduction." };
           } else {
-            result.sources.gbif = { checked: true, note: "Matched to " + result.matchedName + " but distribution records didn't clearly resolve native vs. introduced \u2014 left unconfirmed." };
+            result.sources.gbif = { checked: true, note: "Matched to " + result.matchedName + " but distribution records didn't clearly resolve native vs. introduced \u2014 regional status needs review." };
           }
         }
       } else {
@@ -303,16 +349,24 @@ exports.handler = async function (event) {
     }
   }
 
-  // ---- 3. Wikidata local names + English common name (best-effort, never blocks) ----
-  try {
-    const nameForWikidata = result.matchedName || rawName;
-    const wd = await lookupLocalNames(nameForWikidata);
-    result.localNames = wd.names;
-    result.commonName = wd.commonName;
-    result.sources.wikidata = { checked: wd.checked, note: wd.note };
-  } catch (e) {
-    result.sources.wikidata = { checked: false, note: "Wikidata lookup errored: " + e.message };
-  }
+  // ---- 3. Regional names and common names (best-effort, never blocks) ----
+  const nameForLookup = result.matchedName || rawName;
+  const [wd, gbifNames, inat] = await Promise.all([
+    lookupLocalNames(nameForLookup).catch(e => ({ checked: false, names: [], namesByLanguage: {}, commonName: null, note: "Wikidata lookup errored: " + e.message })),
+    lookupGbifVernacularNames(gbifUsageKey).catch(e => ({ checked: false, names: [], namesByLanguage: {}, note: "GBIF vernacular lookup errored: " + e.message })),
+    lookupINaturalist(nameForLookup).catch(e => ({ checked: false, commonName: null, note: "iNaturalist lookup errored: " + e.message }))
+  ]);
+  result.localNamesByLanguage = { ig: [], yo: [], ha: [] };
+  [wd.namesByLanguage || {}, gbifNames.namesByLanguage || {}].forEach(source => {
+    Object.keys(result.localNamesByLanguage).forEach(lang => {
+      result.localNamesByLanguage[lang] = [...new Set(result.localNamesByLanguage[lang].concat(source[lang] || []))];
+    });
+  });
+  result.localNames = Object.keys(result.localNamesByLanguage).flatMap(lang => result.localNamesByLanguage[lang].map(name => `${name} (${lang})`));
+  result.commonName = wd.commonName || inat.commonName || null;
+  result.sources.wikidata = { checked: wd.checked, note: wd.note };
+  result.sources.gbifNames = { checked: gbifNames.checked, note: gbifNames.note };
+  result.sources.inaturalist = { checked: inat.checked, note: inat.note };
 
   return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) };
 };

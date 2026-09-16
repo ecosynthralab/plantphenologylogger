@@ -77,3 +77,26 @@ Pl@ntNet), species classification (a curated table backed by GBIF and
 Wikidata), charts (Chart.js), spreadsheet export (SheetJS), and optional
 cross-device sync via Supabase. Hosted on Netlify. See `README.md` for the
 technical setup and deployment details.
+
+Classification also checks GBIF vernacular names and the iNaturalist taxon
+database. Regional names are stored separately for Igbo (`ig`), Yoruba
+(`yo`), and Hausa (`ha`) when the sources provide them, and are included in
+the Excel compendium export. If Supabase sync is enabled, add this column to
+the `species` table so the structured names sync between devices:
+
+```sql
+alter table public.species
+	add column if not exists "localNamesByLanguage" jsonb not null default '{}'::jsonb;
+```
+
+## Cross-device photos
+
+When Supabase sync is enabled, photo thumbnails and compendium covers are
+stored locally in IndexedDB and uploaded to a private Supabase Storage bucket
+through `netlify/functions/sync-photo.js`. The synced observation/species row
+contains the shared photo ID, so another device can request the same photo via
+a short-lived signed URL. Configure `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, and `SYNC_SECRET` in Netlify; the private
+`phenology-photos` bucket is created automatically on first photo upload.
+Each device must enter the same sync passcode. Without Supabase configured,
+photos remain local to that device by design.
