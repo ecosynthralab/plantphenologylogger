@@ -570,7 +570,7 @@ async function supabaseUpsert(table, row) {
   }
   const result = await supabaseWrite(table, 'upsert', { row });
   if (result.ok && row && row.id && photoFailures.length === 0) markPushed(table, row.id);
-  if (result.warning) setSyncStatus('error', result.warning);
+  if (result.warning) setSyncStatus('', result.warning);
   if (photoFailures.length) {
     setSyncStatus('error', 'Cloud metadata synced, but photo sync failed: ' + photoFailures.join('; '));
   }
