@@ -77,15 +77,23 @@ exports.handler = async function (event) {
         // Older deployments may not yet have the structured regional-name
         // column. Keep the species row syncable through the existing flat
         // localNames field, while returning a migration warning to the UI.
-        if (table === 'species' && row.localNamesByLanguage && /localNamesByLanguage|column .* does not exist|schema cache/i.test(text)) {
+        const hasLocalNamesSchemaIssue = table === 'species' && row.localNamesByLanguage && /localNamesByLanguage|column\s+localNames/i.test(text);
+        const hasThumbnailFallbackSchemaIssue = table === 'species' && Object.prototype.hasOwnProperty.call(row, 'imgIsThumbnailFallback') && /imgIsThumbnailFallback|column\s+imgIsThumbnailFallback/i.test(text);
+        if (hasLocalNamesSchemaIssue || hasThumbnailFallbackSchemaIssue) {
           rowToWrite = { ...row };
-          delete rowToWrite.localNamesByLanguage;
+          if (hasLocalNamesSchemaIssue) delete rowToWrite.localNamesByLanguage;
+          if (hasThumbnailFallbackSchemaIssue) delete rowToWrite.imgIsThumbnailFallback;
           res = await fetch(SUPABASE_URL + '/rest/v1/' + table, {
             method: 'POST',
             headers: { ...baseHeaders, 'Prefer': 'resolution=merge-duplicates,return=minimal' },
             body: JSON.stringify(rowToWrite)
           });
-          if (res.ok) return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, warning: 'Species synced, but add localNamesByLanguage jsonb to Supabase to sync separate Igbo/Yoruba/Hausa fields.' }) };
+          if (res.ok) {
+            const warning = hasLocalNamesSchemaIssue
+              ? 'Species synced, but add localNamesByLanguage jsonb to Supabase to sync separate Igbo/Yoruba/Hausa fields.'
+              : 'Species synced; omitted imgIsThumbnailFallback because the remote schema does not contain that local-only field.';
+            return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: true, warning }) };
+          }
         }
         return { statusCode: 200, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ok: false, error: 'Supabase upsert failed: HTTP ' + res.status + ' ' + text.slice(0, 300) }) };
       }
