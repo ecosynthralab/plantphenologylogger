@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { handler } = require('./sync-write');
+const { handler } = require('../netlify/functions/sync-write');
 
 (async () => {
   process.env.SUPABASE_URL = 'https://example.supabase.co';
