@@ -1245,7 +1245,11 @@ async function openSpModal(id){
     statusEl.className = 'status-msg';
     const reader = new FileReader();
     reader.onload = async (ev) => {
-      const resized = await makeThumbnail(ev.target.result, 400, 0.65);
+      const resized = await makeThumbnail(
+        ev.target.result,
+        COMPENDIUM_COVER_MAX_DIM,
+        COMPENDIUM_COVER_QUALITY
+      );
       if (!resized) {
         statusEl.textContent = 'Could not read that image \u2014 try a different file.';
         statusEl.className = 'status-msg err';
@@ -1658,7 +1662,10 @@ captureGPS();
 let currentPhotoBase64 = null;
 let currentPhotoMediaType = null;
 let currentPhotoThumb = null; // tiny resized copy stored WITH the record, for the timeline storyboard strip
-let currentPhotoCompendium = null; // larger resized copy, used when this photo becomes a species' compendium cover photo
+let currentPhotoCompendium = null; // higher-resolution copy used when this photo becomes a species' compendium cover photo
+
+const COMPENDIUM_COVER_MAX_DIM = 1200;
+const COMPENDIUM_COVER_QUALITY = 0.85;
 
 function makeThumbnail(dataUrl, maxDim, quality){
   return new Promise((resolve)=>{
@@ -1775,36 +1782,78 @@ function validGps(latitude, longitude) {
     Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180;
 }
 
+function formatExifDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+  if (typeof value !== 'string') return '';
+  const match = value.trim().match(/^(\d{4})[:/](\d{1,2})[:/](\d{1,2})/);
+  if (!match) return '';
+  return `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+}
+
 function applyPhotoGps(latitude, longitude) {
   if (!validGps(latitude, longitude)) return false;
   updateLocationUI({ lat: latitude, lon: longitude, accuracy: null, source: 'photo EXIF' });
-  document.getElementById('photoStatus').textContent = 'Photo attached - GPS extracted from EXIF.';
-  document.getElementById('photoStatus').className = 'status-msg';
   return true;
 }
 
-async function extractPhotoGps(file) {
+function applyPhotoDate(value) {
+  const date = formatExifDate(value);
+  if (!date) return false;
+  document.getElementById('p-visitdate').value = date;
+  return true;
+}
+
+async function extractPhotoMetadata(file) {
+  let gps = null;
+  let dateValue = null;
+
   if (window.exifr) {
     try {
-      const gps = await exifr.gps(file);
-      if (gps && applyPhotoGps(gps.latitude, gps.longitude)) return true;
+      const [gpsResult, metadata] = await Promise.all([
+        exifr.gps(file),
+        exifr.parse(file, ['DateTimeOriginal', 'CreateDate', 'DateTimeDigitized'])
+      ]);
+      gps = gpsResult;
+      dateValue = metadata.DateTimeOriginal || metadata.CreateDate || metadata.DateTimeDigitized;
     } catch (error) {
-      console.warn('Modern EXIF GPS parsing failed, trying fallback:', error.message);
+      console.warn('Modern EXIF metadata parsing failed, trying fallback:', error.message);
     }
   }
 
-  return await new Promise(resolve => {
+  if (!gps || !dateValue) {
     try {
-      EXIF.getData(file, function(){
-        const latitude = exifCoordinate(EXIF.getTag(this, 'GPSLatitude'), exifNumber(EXIF.getTag(this, 'GPSLatitudeRef')) || EXIF.getTag(this, 'GPSLatitudeRef'));
-        const longitude = exifCoordinate(EXIF.getTag(this, 'GPSLongitude'), exifNumber(EXIF.getTag(this, 'GPSLongitudeRef')) || EXIF.getTag(this, 'GPSLongitudeRef'));
-        resolve(applyPhotoGps(latitude, longitude));
+      const legacyMetadata = await new Promise((resolve, reject) => {
+        if (!window.EXIF) return reject(new Error('EXIF.js is unavailable'));
+        EXIF.getData(file, function(){
+          const date = EXIF.getTag(this, 'DateTimeOriginal') ||
+            EXIF.getTag(this, 'CreateDate') ||
+            EXIF.getTag(this, 'DateTimeDigitized');
+          const latitude = exifCoordinate(
+            EXIF.getTag(this, 'GPSLatitude'),
+            exifNumber(EXIF.getTag(this, 'GPSLatitudeRef')) || EXIF.getTag(this, 'GPSLatitudeRef')
+          );
+          const longitude = exifCoordinate(
+            EXIF.getTag(this, 'GPSLongitude'),
+            exifNumber(EXIF.getTag(this, 'GPSLongitudeRef')) || EXIF.getTag(this, 'GPSLongitudeRef')
+          );
+          resolve({ date, latitude, longitude });
+        });
       });
+      dateValue = dateValue || legacyMetadata.date;
+      gps = gps || (validGps(legacyMetadata.latitude, legacyMetadata.longitude)
+        ? { latitude: legacyMetadata.latitude, longitude: legacyMetadata.longitude }
+        : null);
     } catch (error) {
       console.warn('Fallback EXIF parsing failed:', error.message);
-      resolve(false);
     }
-  });
+  }
+
+  return { gps, dateValue };
 }
 
 document.getElementById('photoInput').addEventListener('change', (e)=>{
@@ -1821,7 +1870,11 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
     document.getElementById('plantIdBtn').disabled = false;
     document.getElementById('photoStatus').textContent = 'Photo attached.';
     const thumbDataUrl = await makeThumbnail(dataUrl, 140);
-    const compendiumDataUrl = await makeThumbnail(dataUrl, 400, 0.65);
+    const compendiumDataUrl = await makeThumbnail(
+      dataUrl,
+      COMPENDIUM_COVER_MAX_DIM,
+      COMPENDIUM_COVER_QUALITY
+    );
     try {
       currentPhotoThumb = await storePhoto(thumbDataUrl, 'thumb');
       currentPhotoCompendium = await storePhoto(compendiumDataUrl, 'cover');
@@ -1834,10 +1887,22 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
   };
   reader.readAsDataURL(file);
 
-  extractPhotoGps(file).then(found => {
-    if (!found && document.getElementById('photoStatus').textContent === 'Photo attached.') {
-      document.getElementById('photoStatus').textContent = 'Photo attached - no GPS metadata found. Use device GPS or manual entry instead.';
+  extractPhotoMetadata(file).then(({ gps, dateValue }) => {
+    const foundGps = gps && applyPhotoGps(gps.latitude, gps.longitude);
+    const foundDate = applyPhotoDate(dateValue);
+    const statusEl = document.getElementById('photoStatus');
+    if (statusEl.textContent === 'Photo attached.') {
+      if (foundGps && foundDate) {
+        statusEl.textContent = 'Photo attached - date and GPS extracted from EXIF.';
+      } else if (foundGps) {
+        statusEl.textContent = 'Photo attached - GPS extracted from EXIF.';
+      } else if (foundDate) {
+        statusEl.textContent = 'Photo attached - date extracted from EXIF. GPS metadata was not found.';
+      } else {
+        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found. Use device GPS or manual entry instead.';
+      }
     }
+    statusEl.className = 'status-msg';
   });
 });
 
