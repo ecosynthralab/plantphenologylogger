@@ -562,15 +562,21 @@ function remoteIsNewer(remote, local) {
 
 async function supabaseUpsert(table, row) {
   const photoFailures = [];
+  let photoUploaded = false;
   for (const field of ['thumb', 'img']) {
     if (row && row[field]) {
       const photoResult = await supabasePhotoWrite('upsert', row[field]);
-      if (!photoResult.ok) photoFailures.push(field + ': ' + photoResult.error);
+      if (SUPABASE_ENABLED && photoResult.ok) photoUploaded = true;
+      else if (SUPABASE_ENABLED) photoFailures.push(field + ': ' + photoResult.error);
     }
   }
   const result = await supabaseWrite(table, 'upsert', { row });
   if (result.ok && row && row.id && photoFailures.length === 0) markPushed(table, row.id);
-  if (result.warning) setSyncStatus('', result.warning);
+  if (result.warning) {
+    setSyncStatus('', photoUploaded ? 'Cloud photo uploaded successfully. ' + result.warning : result.warning);
+  } else if (photoUploaded) {
+    setSyncStatus('', 'Cloud photo uploaded successfully.');
+  }
   if (photoFailures.length) {
     setSyncStatus('error', 'Cloud metadata synced, but photo sync failed: ' + photoFailures.join('; '));
   }
