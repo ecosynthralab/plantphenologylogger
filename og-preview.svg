@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Plant Phenology Logger</title>
+  <desc id="desc">A field-ready plant phenology app for recording species, phenophase stages, observations, and exports.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#173F30"/>
+      <stop offset="1" stop-color="#0E241B"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#E7B967"/>
+      <stop offset="1" stop-color="#D58A4A"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#06120D" flood-opacity=".28"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="1040" cy="-70" r="330" fill="#2D684C" opacity=".22"/>
+  <circle cx="90" cy="700" r="330" fill="#B66C3E" opacity=".13"/>
+  <path d="M0 470C180 390 300 500 470 445s250-62 370-30 250 50 360-10v225H0Z" fill="#0A2117" opacity=".42"/>
+
+  <g transform="translate(80 72)">
+    <rect width="68" height="68" rx="18" fill="#F7F2E8"/>
+    <path d="M34 13c-4 10-2 19 5 25 7-6 9-15 5-25-4 5-7 7-10 7s-6-2-10-7Z" fill="#1B3A2B"/>
+    <path d="M34 24v34M19 39c8 2 15 2 30 0M22 49c7 2 14 2 24 0" fill="none" stroke="#1B3A2B" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <text x="180" y="124" fill="#F8F3E8" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="4">ECOSYNTHRA FIELD</text>
+  <text x="80" y="220" fill="#FFFDF8" font-family="Arial, Helvetica, sans-serif" font-size="66" font-weight="700">Plant Phenology</text>
+  <text x="80" y="290" fill="#FFFDF8" font-family="Arial, Helvetica, sans-serif" font-size="66" font-weight="700">Logger</text>
+  <text x="80" y="355" fill="#D8E8DC" font-family="Arial, Helvetica, sans-serif" font-size="27">Record the life cycle of plants in the field.</text>
+
+  <g transform="translate(80 405)" filter="url(#shadow)">
+    <rect width="1040" height="155" rx="30" fill="#F7F2E8"/>
+    <rect x="0" y="0" width="12" height="155" rx="6" fill="url(#accent)"/>
+    <g transform="translate(48 34)">
+      <text x="0" y="25" fill="#173F30" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="2">FIELD READY</text>
+      <text x="0" y="75" fill="#243B30" font-family="Arial, Helvetica, sans-serif" font-size="22">Species identification</text>
+      <text x="0" y="112" fill="#243B30" font-family="Arial, Helvetica, sans-serif" font-size="22">Phenophase tracking</text>
+    </g>
+    <g transform="translate(395 34)">
+      <text x="0" y="25" fill="#173F30" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="2">WORKS EVERYWHERE</text>
+      <text x="0" y="75" fill="#243B30" font-family="Arial, Helvetica, sans-serif" font-size="22">Offline observations</text>
+      <text x="0" y="112" fill="#243B30" font-family="Arial, Helvetica, sans-serif" font-size="22">Exportable records</text>
+    </g>
+    <g transform="translate(745 34)">
+      <text x="0" y="25" fill="#173F30" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" letter-spacing="2">FOR</text>
+      <text x="0" y="75" fill="#243B30" font-family="Arial, Helvetica, sans-serif" font-size="22">Field botanists</text>
+      <text x="0" y="112" fill="#243B30" font-family="Arial, Helvetica, sans-serif" font-size="22">and researchers</text>
+    </g>
+  </g>
+</svg>
