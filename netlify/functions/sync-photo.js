@@ -68,7 +68,11 @@ exports.handler = async function (event) {
     }
 
     if (action === 'delete') {
-      const res = await fetch(url, { method: 'DELETE', headers });
+      const res = await fetch(SUPABASE_URL + '/storage/v1/object/' + encodeURIComponent(BUCKET), {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefixes: [photoId] })
+      });
       if (!res.ok && res.status !== 404) return response({ ok: false, error: 'Supabase photo delete failed: HTTP ' + res.status });
       return response({ ok: true });
     }
