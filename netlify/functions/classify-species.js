@@ -27,6 +27,7 @@ const NIGERIA_HINTS = [
   "s. tropical africa", "c. tropical africa", "e. tropical africa"
 ];
 const LOCAL_LANGUAGES = { ig: "Igbo", yo: "Yoruba", ha: "Hausa" };
+const AFRICAN_ISO2 = new Set("DZ AO BJ BW BF BI CM CV CF TD KM CG CD CI DJ EG GQ ER SZ ET GA GM GH GN GW KE LS LR LY MG MW ML MR MU MA MZ NA NE NG RW ST SN SC SL SO ZA SS SD TZ TG TN UG ZM ZW RE YT SH EH".split(" "));
 const APP_USER_AGENT = "Ecosynthra-Phenology-Logger/1.0 (species classification; contact site maintainer)";
 const REGIONAL_SPECIES = require("../../Species list/phenology_logger_species_database.json");
 const WCVP_NIGERIA = require("../../Species list/nigeria_origin_lookup.json");
@@ -352,6 +353,14 @@ exports.handler = async function (event) {
   const useRegional = regionalCanResolve && (!curated || curated.status === "unknown");
   const wcvp = lookupWcvp(rawName);
   const useWcvp = !!wcvp && !useRegional && (!curated || curated.status === "unknown") && !wcvp.doubtful && !wcvp.extinct;
+  // POWO has no public API; its underlying dataset (WCVP) is bundled, so report that.
+  result.sources = {
+    curated: result.sources.curated,
+    powo: wcvp
+      ? { checked: true, note: "WCVP v16 (the dataset behind Kew POWO) records this taxon as " + (wcvp.status === 0 ? "native" : "introduced") + " in Nigeria" + (wcvp.doubtful ? " (location doubtful)" : "") + (wcvp.extinct ? " (extinct)" : "") + (wcvp.viaSynonym ? ", matched through a synonym" : "") + "." }
+      : { checked: true, note: "No Nigeria record in the bundled WCVP v16 (the dataset behind Kew POWO). POWO has no public API \u2014 check powo.science.kew.org manually." },
+    ...Object.fromEntries(Object.entries(result.sources).filter(([k]) => k !== "curated"))
+  };
 
   if (curated && !useRegional && !useWcvp) {
     result.matchedName = curated.key.replace(/\b\w/g, c => c.toUpperCase());
@@ -513,8 +522,24 @@ exports.handler = async function (event) {
             result.sources.gbif = { checked: true, note: "GBIF distribution record found for Nigeria (establishmentMeans: " + means + ")." };
           } else if (anyNative) {
               result.origin = anyNative.locality || anyNative.country || "See GBIF record";
-              result.note = "GBIF lists native distribution elsewhere (" + result.origin + ") but does not provide enough Nigeria-specific evidence to classify this as native or introduced.";
-              result.sources.gbif = { checked: true, note: "Native range found elsewhere, but absence of a Nigeria record is not treated as proof of introduction." };
+              // GBIF native records with a country code outside Africa, plus
+              // introduced records inside Africa and none native in Africa,
+              // is strong enough to flag "likely non-native" (still reviewed).
+              const nativeRecs = dists.filter(d => (d.establishmentMeans || "").toUpperCase() === "NATIVE");
+              const nativeInAfrica = nativeRecs.some(d => AFRICAN_ISO2.has((d.country || "").toUpperCase()));
+              const nativeOutside = nativeRecs.filter(d => d.country && !AFRICAN_ISO2.has(d.country.toUpperCase()));
+              const introducedInAfrica = dists.filter(d => ["INTRODUCED", "NATURALIZED", "INVASIVE"].includes((d.establishmentMeans || "").toUpperCase()) && AFRICAN_ISO2.has((d.country || "").toUpperCase()));
+              if (!nativeInAfrica && nativeOutside.length && introducedInAfrica.length) {
+                const nativeCountries = [...new Set(nativeOutside.map(d => d.country))].join(", ");
+                const introCountries = [...new Set(introducedInAfrica.map(d => d.country))].join(", ");
+                result.statusLabel = "Likely non-native (needs confirmation)";
+                result.origin = "Native range outside Africa (GBIF: " + nativeCountries + ")";
+                result.note = "No Nigeria record was found. GBIF lists native records only outside Africa (" + nativeCountries + ") and introduced records in Africa (" + introCountries + "), so this is probably introduced in Nigeria. This is an inference, not a Nigeria record \u2014 confirm against POWO/FWTA before relying on it.";
+                result.sources.gbif = { checked: true, note: "No Nigeria record; native only outside Africa and introduced elsewhere in Africa. Treated as 'likely non-native', kept in review." };
+              } else {
+                result.note = "GBIF lists native distribution elsewhere (" + result.origin + ") but does not provide enough Nigeria-specific evidence to classify this as native or introduced.";
+                result.sources.gbif = { checked: true, note: "Native range found elsewhere, but absence of a Nigeria record is not treated as proof of introduction." };
+              }
           } else {
             result.sources.gbif = { checked: true, note: "Matched to " + result.matchedName + " but distribution records didn't clearly resolve native vs. introduced \u2014 regional status needs review." };
           }
