@@ -10,15 +10,11 @@
 // live data, not app shell, and a stale cached response for something
 // like species classification would be actively misleading.
 
-// v2: app shell switched from cache-first to network-first. Cache-first
-// meant every load served whatever was cached IMMEDIATELY, with a fresh
-// copy only fetched quietly in the background for next time \u2014 so an
-// update deployed to Netlify wouldn't actually be seen until the SECOND
-// reload after it went live, and a mobile "hard refresh" doesn't reliably
-// bypass an active service worker the way it does in desktop DevTools.
-// That's a real cost for an app under active iteration; offline support
-// is still fully preserved via the catch() fallback below.
-const CACHE_VERSION = 'ecosynthra-shell-v2';
+// v3: cache the vendor libraries during installation because the worker
+// registers after the first page load, so it otherwise misses those requests.
+// The app shell stays network-first while online; Cache Storage is the
+// offline fallback.
+const CACHE_VERSION = 'ecosynthra-shell-v3';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -28,11 +24,30 @@ const APP_SHELL = [
   '/icon-maskable-192.png',
   '/icon-maskable-512.png'
 ];
+const VENDOR_ASSETS = [
+  'https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/exif-js/2.3.0/exif.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
+  'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js',
+  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js'
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_VERSION)
-      .then((cache) => cache.addAll(APP_SHELL))
+    caches.open(CACHE_VERSION).then(async (cache) => {
+      await cache.addAll(APP_SHELL);
+      await Promise.all(VENDOR_ASSETS.map(async (url) => {
+        try {
+          const response = await fetch(url, { mode: 'no-cors' });
+          if (!response.ok && response.type !== 'opaque') {
+            throw new Error('HTTP ' + response.status);
+          }
+          await cache.put(url, response);
+        } catch (error) {
+          console.warn('Could not pre-cache optional library for offline use:', url, error.message);
+        }
+      }));
+    })
       .then(() => self.skipWaiting())
   );
 });

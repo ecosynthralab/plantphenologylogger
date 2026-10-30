@@ -359,6 +359,10 @@ exports.handler = async function (event) {
   } else if (useRegional) {
     const native = regionalStatus === "Native";
     const statusLabel = native ? "Native · Indigenous (regional table)" : "Non-native · Introduced (regional table)";
+    const hasNamedSources = regional.sources && !/^S\d+(?:,\s*S\d+)*$/.test(regional.sources);
+    const sourceNote = hasNamedSources
+      ? "Sources: " + regional.sources + "."
+      : "Hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + ".";
     result.matchedName = regional.accepted_name;
     result.family = regional.family || null;
     result.status = native ? "native" : "non-native";
@@ -367,7 +371,7 @@ exports.handler = async function (event) {
     result.note = "The regional species table records Nigeria status as " + regionalStatus + ". Wider West Tropical African status: " + regional.wta_status + ".";
     result.sources.curated = {
       checked: true,
-      note: "Matched against the curated West African species table (hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + "). Nigeria status: " + regionalStatus + "."
+      note: "Matched against the curated West African species table. " + sourceNote + " Nigeria status: " + regionalStatus + "."
     };
     result.sources.fwta = { checked: false, note: "Not individually verified against FWTA text yet." };
 
@@ -386,9 +390,13 @@ exports.handler = async function (event) {
     } catch (e) { /* classification is a nice-to-have; the regional status is already available */ }
   } else {
     if (regional) {
+      const hasNamedSources = regional.sources && !/^S\d+(?:,\s*S\d+)*$/.test(regional.sources);
+      const sourceNote = hasNamedSources
+        ? "Sources: " + regional.sources + "."
+        : "Hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + ".";
       result.sources.curated = {
         checked: true,
-        note: "Matched against the curated West African species table (hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + "), but Nigeria status is not recorded. Regional review remains necessary."
+        note: "Matched against the curated West African species table. " + sourceNote + " Nigeria status is not recorded. Regional review remains necessary."
       };
     }
     // ---- 2. GBIF fallback (official API) ----
