@@ -253,7 +253,14 @@ table.datatable td{padding:8px 8px; border-bottom:1px solid var(--line); white-s
 
 .sp-carousel{display:flex; gap:9px; overflow-x:auto; padding:12px 2px 4px; margin-top:2px; -webkit-overflow-scrolling:touch;}
 .sp-carousel-item{flex:0 0 auto; width:76px; text-align:center;}
-.sp-carousel-thumb{width:76px; height:76px; border-radius:8px; overflow:hidden; background:var(--bg2); border:1px solid var(--line); position:relative;}
+.sp-carousel-thumb{width:76px; height:76px; border-radius:8px; overflow:hidden; background:var(--bg2); border:1px solid var(--line); position:relative; cursor:pointer;}
+.photo-viewer{position:fixed; inset:0; background:rgba(10,14,10,0.92); display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:20px 14px; z-index:80;}
+.photo-viewer.open{display:flex;}
+.photo-viewer img{max-width:100%; max-height:70vh; border-radius:8px; object-fit:contain;}
+.photo-viewer .pv-cap{color:#fff; font-family:var(--mono); font-size:12px; text-align:center;}
+.photo-viewer .pv-actions{display:flex; gap:10px;}
+.photo-viewer button{border:1px solid rgba(255,255,255,0.5); background:transparent; color:#fff; border-radius:8px; padding:9px 16px; font-size:13px; cursor:pointer;}
+.photo-viewer button.pv-del{border-color:#e0705a; color:#ff9d8a;}
 .sp-carousel-thumb img{width:100%;height:100%;object-fit:cover;}
 
 footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-family:var(--mono); font-size:11px; color:var(--ink-soft); display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px; max-width:900px; margin-left:auto; margin-right:auto;}
@@ -450,6 +457,15 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
 
 <div class="modal-bg" id="spModalBg">
   <div class="sp-modal" id="spModalContent"></div>
+</div>
+
+<div class="photo-viewer" id="photoViewer">
+  <img id="pvImg" alt="">
+  <div class="pv-cap" id="pvCap"></div>
+  <div class="pv-actions">
+    <button id="pvDelete" class="pv-del">Delete photo</button>
+    <button id="pvClose">Close</button>
+  </div>
 </div>
 
 <footer>
@@ -1221,8 +1237,8 @@ async function openSpModal(id){
               const ph = dominantPhenophase(r);
               const color = safePhenoMeta(ph).color;
               const src = photoUrls[i];
-              return `<div class="sp-carousel-item">
-                <div class="sp-carousel-thumb">${src ? `<img src="${src}" alt="">` : '<span class="noimg">&#127807;</span>'}<div class="story-dot" style="background:${color}" title="${safePhenoMeta(ph).label}"></div></div>
+              return `<div class="sp-carousel-item" data-obs="${r.id}">
+                <div class="sp-carousel-thumb" title="Tap to enlarge">${src ? `<img src="${src}" alt="">` : '<span class="noimg">&#127807;</span>'}<div class="story-dot" style="background:${color}" title="${safePhenoMeta(ph).label}"></div></div>
                 <div class="story-date">${r.visitDate||''}</div>
               </div>`;
             }).join('')}
@@ -1251,6 +1267,12 @@ async function openSpModal(id){
   `;
   document.getElementById('spModalBg').classList.add('open');
   document.getElementById('spCloseBtn').addEventListener('click', closeSpModal);
+  modal.querySelectorAll('.sp-carousel-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const idx = photos.findIndex(r => r.id === item.dataset.obs);
+      if (idx !== -1) openPhotoViewer(photos[idx], photoUrls[idx], s);
+    });
+  });
   document.getElementById('logThisBtn').addEventListener('click', ()=> logThisSpecies(s));
   const retryBtn = document.getElementById('retryClassifyBtn');
   if (retryBtn) retryBtn.addEventListener('click', ()=> retryClassification(s));
@@ -1326,6 +1348,45 @@ async function openSpModal(id){
   });
 }
 function closeSpModal(){ document.getElementById('spModalBg').classList.remove('open'); }
+
+// Enlarged view of one field photo; deleting removes only the photo from
+// that observation, never the observation record itself.
+function closePhotoViewer(){ document.getElementById('photoViewer').classList.remove('open'); }
+function openPhotoViewer(record, src, species){
+  if (!src) return;
+  const viewer = document.getElementById('photoViewer');
+  document.getElementById('pvImg').src = src;
+  document.getElementById('pvCap').textContent = (species.sci || '') + (record.visitDate ? ' \u00b7 ' + record.visitDate : '') + (record.plotId ? ' \u00b7 ' + record.plotId : '');
+  const delBtn = document.getElementById('pvDelete');
+  delBtn.onclick = async () => {
+    if (!confirm('Delete this photo? The observation itself will be kept.')) return;
+    delBtn.disabled = true;
+    try {
+      const key = 'obs:' + record.id;
+      const current = lsGet(key);
+      if (current) {
+        const thumbId = current.thumb;
+        lsSet(key, { ...current, thumb: null, hasPhoto: false });
+        await deletePhoto(thumbId);
+        if (SUPABASE_ENABLED) {
+          await supabasePhotoWrite('delete', thumbId);
+          supabaseUpsert('observations', { ...current, thumb: null, hasPhoto: false });
+        }
+      }
+      closePhotoViewer();
+      refreshLog();
+      openSpModal(species.id);
+    } catch (e) {
+      alert('Could not delete the photo: ' + e.message);
+    } finally {
+      delBtn.disabled = false;
+    }
+  };
+  viewer.classList.add('open');
+}
+document.getElementById('pvClose').addEventListener('click', closePhotoViewer);
+document.getElementById('photoViewer').addEventListener('click', (e) => { if (e.target.id === 'photoViewer') closePhotoViewer(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePhotoViewer(); });
 document.getElementById('spModalBg').addEventListener('click', (e)=>{ if(e.target.id==='spModalBg') closeSpModal(); });
 
 // Species deleted on purpose via deleteSpecies() below must stay deleted
