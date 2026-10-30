@@ -33,7 +33,9 @@ doesn't stop you mid-visit.
 **Native vs. non-native classification.** Every species gets checked
 against the hand-curated West African table and regional species database,
 with Nigeria-specific records taking precedence over automated global
-biodiversity lookups. A species recorded as native elsewhere in West Africa,
+biodiversity lookups. After those, a bundled copy of Kew's WCVP v16 Nigeria
+distribution (country-level native/introduced, including synonyms) resolves
+many remaining species; doubtful or extinct records are left for review. A species recorded as native elsewhere in West Africa,
 or not recorded for Nigeria, is not automatically classified as native or
 introduced in Nigeria. When the evidence does not resolve its status, the
 app says so — "Unconfirmed" — rather than guessing, because a wrong

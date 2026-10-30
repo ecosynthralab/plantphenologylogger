@@ -6,6 +6,9 @@
 //   2. The West African regional species table — used only when the static
 //      lookup is absent or unresolved. Only Nigeria-specific status is used;
 //      "not recorded" never implies absence.
+//   2b. WCVP v16 Nigeria distribution (bundled) — country-level native /
+//      introduced, used when 1 and 2 do not resolve. Doubtful/extinct records
+//      are left for review.
 //   3. GBIF (official, documented API — https://techdocs.gbif.org/en/openapi/)
 //      — species/match to resolve the name, then /species/{key}/distributions
 //      for establishmentMeans. Used only when earlier sources do not resolve status.
@@ -26,6 +29,7 @@ const NIGERIA_HINTS = [
 const LOCAL_LANGUAGES = { ig: "Igbo", yo: "Yoruba", ha: "Hausa" };
 const APP_USER_AGENT = "Ecosynthra-Phenology-Logger/1.0 (species classification; contact site maintainer)";
 const REGIONAL_SPECIES = require("../../Species list/phenology_logger_species_database.json");
+const WCVP_NIGERIA = require("../../Species list/nigeria_origin_lookup.json");
 
 // ---------------------------------------------------------------------
 // CURATED STATIC LOOKUP — hand-verified, sources cited in each note.
@@ -137,6 +141,31 @@ REGIONAL_SPECIES.forEach(species => {
 function lookupRegional(name) {
   const key = regionalNameKey(name);
   return REGIONAL_SPECIES_BY_NAME.get(key) || REGIONAL_SPECIES_ALIASES.get(key) || null;
+}
+
+// WCVP v16 Nigeria distribution: record = [status 0 native/1 introduced, flags (2 doubtful, 4 extinct), family, accepted name, authority]
+function lookupWcvp(name) {
+  const norm = normalizeName(name).replace(/\u00d7/g, "x");
+  const parts = norm.split(" ");
+  if (parts.length < 2 || /^spp?\.?$/.test(parts[1])) return null;
+  const keys = [];
+  for (let i = 2; i < parts.length - 1; i++) {
+    if (/^(var|subsp|ssp|f)\.?$/.test(parts[i])) {
+      keys.push(parts[0] + " " + parts[1] + " " + parts[i].replace(".", "").replace("ssp", "subsp") + ". " + parts[i + 1]);
+      break;
+    }
+  }
+  keys.push(parts[0] + " " + parts[1]);
+  for (const key of keys) {
+    let acc = key, viaSynonym = false;
+    if (!WCVP_NIGERIA.a[acc]) {
+      acc = WCVP_NIGERIA.s[key];
+      viaSynonym = true;
+    }
+    const rec = acc && WCVP_NIGERIA.a[acc];
+    if (rec) return { rec, viaSynonym, status: rec[0], doubtful: !!(rec[1] & 2), extinct: !!(rec[1] & 4), family: rec[2], accepted: rec[3], authority: rec[4] };
+  }
+  return null;
 }
 
 function lookupCurated(name) {
@@ -321,8 +350,10 @@ exports.handler = async function (event) {
   const regionalStatus = regional && regional.nigeria_status;
   const regionalCanResolve = regional && ["Native", "Introduced"].includes(regionalStatus);
   const useRegional = regionalCanResolve && (!curated || curated.status === "unknown");
+  const wcvp = lookupWcvp(rawName);
+  const useWcvp = !!wcvp && !useRegional && (!curated || curated.status === "unknown") && !wcvp.doubtful && !wcvp.extinct;
 
-  if (curated && !useRegional) {
+  if (curated && !useRegional && !useWcvp) {
     result.matchedName = curated.key.replace(/\b\w/g, c => c.toUpperCase());
     result.family = curated.family;
     result.status = curated.status;
@@ -388,6 +419,35 @@ exports.handler = async function (event) {
         };
       }
     } catch (e) { /* classification is a nice-to-have; the regional status is already available */ }
+  } else if (useWcvp) {
+    const native = wcvp.status === 0;
+    result.matchedName = wcvp.accepted;
+    result.family = wcvp.family || null;
+    result.status = native ? "native" : "non-native";
+    result.statusLabel = native ? "Native · Indigenous (WCVP)" : "Non-native · Introduced (WCVP)";
+    result.origin = "Nigeria distribution record in WCVP v16";
+    result.note = "WCVP v16 (Kew) records this taxon as " + (native ? "native" : "introduced") + " in Nigeria" +
+      (wcvp.viaSynonym ? "; matched through a synonym of " + wcvp.accepted + (wcvp.authority ? " " + wcvp.authority : "") : "") +
+      ". This is country-level evidence and does not describe south-east Nigeria specifically.";
+    result.sources.curated = {
+      checked: true,
+      note: "Not individually hand-verified. Resolved from the bundled WCVP v16 Nigeria distribution table (" + (native ? "native" : "introduced") + ")."
+    };
+    result.sources.fwta = { checked: false, note: "Not individually verified against FWTA text yet." };
+
+    try {
+      const classifyUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(result.matchedName) + "&kingdom=Plantae";
+      const classifyMatch = await safeFetchJson(classifyUrl, 7000);
+      if (classifyMatch.ok && classifyMatch.data && classifyMatch.data.usageKey) {
+        const g = classifyMatch.data;
+        gbifUsageKey = g.usageKey;
+        result.classification = {
+          kingdom: g.kingdom || null, phylum: g.phylum || null, class: g.class || null,
+          order: g.order || null, family: g.family || result.family, genus: g.genus || null,
+          species: g.species || result.matchedName
+        };
+      }
+    } catch (e) { /* classification is a nice-to-have; the WCVP status is already available */ }
   } else {
     if (regional) {
       const hasNamedSources = regional.sources && !/^S\d+(?:,\s*S\d+)*$/.test(regional.sources);
