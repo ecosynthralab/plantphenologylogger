@@ -579,7 +579,7 @@ async function supabaseUpsert(table, row) {
   for (const field of ['thumb', 'img']) {
     if (row && row[field]) {
       const photoResult = await supabasePhotoWrite('upsert', row[field]);
-      if (SUPABASE_ENABLED && photoResult.ok) photoUploaded = true;
+      if (SUPABASE_ENABLED && photoResult.ok) { if (!photoResult.skipped) photoUploaded = true; }
       else if (SUPABASE_ENABLED) photoFailures.push(field + ': ' + photoResult.error);
     }
   }
@@ -878,7 +878,11 @@ async function supabasePhotoWrite(action, photoId) {
   if (action === 'upsert') {
     let blob = await getPhotoBlob(photoId);
     if (!blob && typeof photoId === 'string' && photoId.startsWith('data:')) blob = dataUrlToBlob(photoId);
-    if (!blob) return { ok: false, error: 'photo is not available locally for cloud upload' };
+    if (!blob) {
+      // Photo lives on another device or already in the cloud; nothing to upload from here.
+      console.warn('Skipping cloud photo upload; photo not stored on this device:', photoId);
+      return { ok: true, skipped: true };
+    }
     payload.base64 = await blobToBase64(blob);
     payload.contentType = blob.type || 'image/jpeg';
   }
