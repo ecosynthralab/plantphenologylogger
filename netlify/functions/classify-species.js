@@ -2,19 +2,17 @@
 // for Nigeria, and attaches any local-language names found.
 //
 // Lookup order:
-//   1. CURATED_SPECIES (static, below) — hand-verified against POWO/FWTA the
-//      same way the original 11-species compendium was built. Zero network
-//      calls, can't break, instant. This is "option 3" as actually shippable:
-//      not the full 1.4M-name WCVP (not reachable from this environment and
-//      too large for a serverless function anyway), but the West African
-//      ruderal/weed species Chidimma is actually likely to log.
-//   2. GBIF (official, documented API — https://techdocs.gbif.org/en/openapi/)
+//   1. CURATED_SPECIES (static, below) — hand-verified records.
+//   2. The West African regional species table — used only when the static
+//      lookup is absent or unresolved. Only Nigeria-specific status is used;
+//      "not recorded" never implies absence.
+//   3. GBIF (official, documented API — https://techdocs.gbif.org/en/openapi/)
 //      — species/match to resolve the name, then /species/{key}/distributions
-//      for establishmentMeans. Used only when the static table has no match.
+//      for establishmentMeans. Used only when earlier sources do not resolve status.
 //      This REPLACES the old POWO scrape entirely — POWO has no official API
 //      (confirmed: IPNI's own site states "there is no publicly available
 //      API"), so it's no longer called live at all.
-//   3. Wikidata SPARQL (official, documented) — best-effort lookup for any
+//   4. Wikidata SPARQL (official, documented) — best-effort lookup for any
 //      local-language common names (P1843) in Yoruba/Igbo/Hausa. Coverage is
 //      genuinely sparse for West African plants as of this writing — this
 //      is a bonus layer, not a primary source, and is never allowed to slow
@@ -27,6 +25,7 @@ const NIGERIA_HINTS = [
 ];
 const LOCAL_LANGUAGES = { ig: "Igbo", yo: "Yoruba", ha: "Hausa" };
 const APP_USER_AGENT = "Ecosynthra-Phenology-Logger/1.0 (species classification; contact site maintainer)";
+const REGIONAL_SPECIES = require("../../Species list/phenology_logger_species_database.json");
 
 // ---------------------------------------------------------------------
 // CURATED STATIC LOOKUP — hand-verified, sources cited in each note.
@@ -112,6 +111,32 @@ const CURATED_SPECIES = {
 
 function normalizeName(name) {
   return (name || "").toLowerCase().replace(/\s*\(.*?\)/g, "").replace(/\bcf\.?\b/gi, "").replace(/\s+/g, " ").trim();
+}
+
+function regionalNameKey(name) {
+  return normalizeName(name).split(" ").slice(0, 2).join(" ");
+}
+
+const REGIONAL_SPECIES_BY_NAME = new Map();
+const REGIONAL_SPECIES_ALIASES = new Map();
+
+REGIONAL_SPECIES.forEach(species => {
+  REGIONAL_SPECIES_BY_NAME.set(regionalNameKey(species.accepted_name), species);
+  (species.names_in_lists || "").split("|").forEach(alias => {
+    const key = regionalNameKey(alias);
+    if (!key || REGIONAL_SPECIES_BY_NAME.has(key)) return;
+    const existing = REGIONAL_SPECIES_ALIASES.get(key);
+    if (REGIONAL_SPECIES_ALIASES.has(key) && existing && existing.species_id !== species.species_id) {
+      REGIONAL_SPECIES_ALIASES.set(key, null);
+    } else if (!REGIONAL_SPECIES_ALIASES.has(key)) {
+      REGIONAL_SPECIES_ALIASES.set(key, species);
+    }
+  });
+});
+
+function lookupRegional(name) {
+  const key = regionalNameKey(name);
+  return REGIONAL_SPECIES_BY_NAME.get(key) || REGIONAL_SPECIES_ALIASES.get(key) || null;
 }
 
 function lookupCurated(name) {
@@ -292,7 +317,12 @@ exports.handler = async function (event) {
 
   // ---- 1. Curated static table (instant, no network) ----
   const curated = lookupCurated(rawName);
-  if (curated) {
+  const regional = lookupRegional(rawName);
+  const regionalStatus = regional && regional.nigeria_status;
+  const regionalCanResolve = regional && ["Native", "Introduced"].includes(regionalStatus);
+  const useRegional = regionalCanResolve && (!curated || curated.status === "unknown");
+
+  if (curated && !useRegional) {
     result.matchedName = curated.key.replace(/\b\w/g, c => c.toUpperCase());
     result.family = curated.family;
     result.status = curated.status;
@@ -303,6 +333,12 @@ exports.handler = async function (event) {
     result.sources.fwta = curated.fwtaChecked
       ? { checked: true, note: "FWTA citation included in the note above." }
       : { checked: false, note: "Not individually verified against FWTA text yet." };
+    if (curated.status === "unknown" && regional) {
+      result.sources.curated = {
+        checked: true,
+        note: "Matched against the curated West African species table (hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + "), but Nigeria status is not recorded. Regional review remains necessary."
+      };
+    }
 
     // Curated matches skip the full GBIF distribution lookup (status is
     // already hand-verified), but classification is still worth having \u2014
@@ -320,7 +356,41 @@ exports.handler = async function (event) {
         };
       }
     } catch (e) { /* classification is a nice-to-have here; curated status/family/note above already stand on their own */ }
+  } else if (useRegional) {
+    const native = regionalStatus === "Native";
+    const statusLabel = native ? "Native · Indigenous (regional table)" : "Non-native · Introduced (regional table)";
+    result.matchedName = regional.accepted_name;
+    result.family = regional.family || null;
+    result.status = native ? "native" : "non-native";
+    result.statusLabel = statusLabel;
+    result.origin = regional.origin_category || "Nigeria status recorded in the regional table";
+    result.note = "The regional species table records Nigeria status as " + regionalStatus + ". Wider West Tropical African status: " + regional.wta_status + ".";
+    result.sources.curated = {
+      checked: true,
+      note: "Matched against the curated West African species table (hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + "). Nigeria status: " + regionalStatus + "."
+    };
+    result.sources.fwta = { checked: false, note: "Not individually verified against FWTA text yet." };
+
+    try {
+      const classifyUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(result.matchedName) + "&kingdom=Plantae";
+      const classifyMatch = await safeFetchJson(classifyUrl, 7000);
+      if (classifyMatch.ok && classifyMatch.data && classifyMatch.data.usageKey) {
+        const g = classifyMatch.data;
+        gbifUsageKey = g.usageKey;
+        result.classification = {
+          kingdom: g.kingdom || null, phylum: g.phylum || null, class: g.class || null,
+          order: g.order || null, family: g.family || result.family, genus: g.genus || null,
+          species: g.species || result.matchedName
+        };
+      }
+    } catch (e) { /* classification is a nice-to-have; the regional status is already available */ }
   } else {
+    if (regional) {
+      result.sources.curated = {
+        checked: true,
+        note: "Matched against the curated West African species table (hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + "), but Nigeria status is not recorded. Regional review remains necessary."
+      };
+    }
     // ---- 2. GBIF fallback (official API) ----
     const cleanName = rawName.replace(/\(.*?\)/g, "").replace(/\bcf\.?\b/gi, "").trim();
     const gbifMatchUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(cleanName) + "&kingdom=Plantae";

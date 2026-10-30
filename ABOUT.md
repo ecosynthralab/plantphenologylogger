@@ -31,11 +31,13 @@ back to a second one if the first is unavailable, so a flaky connection
 doesn't stop you mid-visit.
 
 **Native vs. non-native classification.** Every species gets checked
-against a hand-curated table of West African species (verified against
-standard floras), with an automated fallback to global biodiversity
-databases for anything not already catalogued. When neither source can
-answer confidently, the app says so — "Unconfirmed" — rather than
-guessing, because a wrong classification is worse than an honest gap.
+against the hand-curated West African table and regional species database,
+with Nigeria-specific records taking precedence over automated global
+biodiversity lookups. A species recorded as native elsewhere in West Africa,
+or not recorded for Nigeria, is not automatically classified as native or
+introduced in Nigeria. When the evidence does not resolve its status, the
+app says so — "Unconfirmed" — rather than guessing, because a wrong
+classification is worse than an honest gap.
 
 **Structured phenophase scoring.** Rather than free-text notes, each visit
 records a 0–4 score across five stages — vegetative, flower bud, open
