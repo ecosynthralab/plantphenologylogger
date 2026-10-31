@@ -1197,7 +1197,7 @@ async function openSpModal(id){
   const meta = safeStatusMeta(s.status);
   const pm = safePhenoMeta(s.phenophase);
   const modal = document.getElementById('spModalContent');
-  const sourceRows = Object.keys(s.sources||{}).map(k=>{
+  const sourceRows = Object.keys(s.sources||{}).filter(k => !(k === 'fwta' && !s.sources[k].checked)).map(k=>{
     const src = s.sources[k];
     return `<div class="source-row">
       <div class="source-check ${src.checked?'yes':'no'}">${src.checked?'&#10003;':''}</div>
@@ -1554,8 +1554,7 @@ function addUnknownSpecies(photoDataUri) {
     sources: {
       powo: {checked:false, note:'Cannot search without a confirmed name'},
       gbif: {checked:false, note:'Cannot search without a confirmed name'},
-      inaturalist: {checked:false, note:'Cannot search without a confirmed name'},
-      fwta: {checked:false, note:'Cannot search without a confirmed name'}
+      inaturalist: {checked:false, note:'Cannot search without a confirmed name'}
     },
     userLogged: true
   };
@@ -1643,7 +1642,7 @@ async function classifyAndAddSpecies(name, photoDataUri) {
     result = { status:'unknown', statusLabel:'Regional review needed', origin:'\u2014', family:null, localNames: [],
       note:'Automated classification unavailable (offline or function not deployed) - regional review is needed.',
       sources:{ curated:{checked:false,note:'Not reachable'}, gbif:{checked:false,note:'Lookup not reachable'},
-                inaturalist:{checked:false,note:'Not queried'}, fwta:{checked:false,note:'Not queried'},
+                inaturalist:{checked:false,note:'Not queried'},
                 wikidata:{checked:false,note:'Not queried'} } };
   }
 
@@ -2208,7 +2207,7 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
           origin: '\u2014', note: 'Automated classification failed unexpectedly \u2014 added as unconfirmed so it is not lost. Open this entry and use "Identify this species" to correct it.',
           tags: ['field-logged', 'needs identification'], img: currentPhotoCompendium || null,
           phenophase: 'unrecorded', phenoNote: '', localNames: [],
-          sources: { powo:{checked:false,note:'Classification failed'}, gbif:{checked:false,note:'Classification failed'}, inaturalist:{checked:false,note:'Classification failed'}, fwta:{checked:false,note:'Classification failed'} },
+          sources: { powo:{checked:false,note:'Classification failed'}, gbif:{checked:false,note:'Classification failed'}, inaturalist:{checked:false,note:'Classification failed'} },
           userLogged: true
         });
         saveUserSpecies(list);

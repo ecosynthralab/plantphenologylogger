@@ -2,12 +2,11 @@
 // for Nigeria, and attaches any local-language names found.
 //
 // Lookup order:
-//   1. CURATED_SPECIES (static, below) — hand-verified records.
-//   2. The West African regional species table — used only when the static
-//      lookup is absent or unresolved. Only Nigeria-specific status is used;
-//      "not recorded" never implies absence.
-//   2b. WCVP v16 Nigeria distribution (bundled) — country-level native /
-//      introduced, used when 1 and 2 do not resolve. Doubtful/extinct records
+//   1. The West African regional species table (bundled JSON) — Nigeria-
+//      specific status only; "not recorded" never implies absence. Any
+//      curator_note on a record is appended to the note shown.
+//   2. WCVP v16 Nigeria distribution (bundled) — country-level native /
+//      introduced, used when 1 does not resolve. Doubtful/extinct records
 //      are left for review.
 //   3. GBIF (official, documented API — https://techdocs.gbif.org/en/openapi/)
 //      — species/match to resolve the name, then /species/{key}/distributions
@@ -31,88 +30,6 @@ const AFRICAN_ISO2 = new Set("DZ AO BJ BW BF BI CM CV CF TD KM CG CD CI DJ EG GQ
 const APP_USER_AGENT = "Ecosynthra-Phenology-Logger/1.0 (species classification; contact site maintainer)";
 const REGIONAL_SPECIES = require("../../Species list/phenology_logger_species_database.json");
 const WCVP_NIGERIA = require("../../Species list/nigeria_origin_lookup.json");
-
-// ---------------------------------------------------------------------
-// CURATED STATIC LOOKUP — hand-verified, sources cited in each note.
-// Keyed by lowercase binomial (genus + species, no author).
-// ---------------------------------------------------------------------
-const CURATED_SPECIES = {
-  "mimosa pudica": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Fabaceae (Mimosoideae)",
-    origin: "Tropical Americas (Caribbean, Central & South America)",
-    note: "Pantropical weed, present in West Africa but not native to it. FWTA: Hutchinson & Dalziel, ed. 2, Vol. 1 Part 2: 495 (1958).",
-    fwtaChecked: true
-  },
-  "mimosa diplotricha": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Fabaceae (Mimosoideae)",
-    origin: "Tropical Americas",
-    note: "Giant sensitive plant; native to tropical America, invasive across the Old World tropics including West Africa.",
-    fwtaChecked: false
-  },
-  "chamaecrista mimosoides": {
-    status: "native", statusLabel: "Native \u00b7 Indigenous", family: "Fabaceae (Caesalpinioideae)",
-    origin: "Tropical & Southern Africa, Tropical Asia to N. Australia",
-    note: "As Cassia mimosoides L. in older Floras. FWTA: Keay, ed. 2, Vol. 1 Part 2 (1958); Nigeria within native range.",
-    fwtaChecked: true
-  },
-  "euphorbia hirta": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Euphorbiaceae",
-    origin: "Tropical America", note: "Naturalised pantropically incl. West Africa.", fwtaChecked: false
-  },
-  "evolvulus alsinoides": {
-    status: "native", statusLabel: "Native \u00b7 Indigenous", family: "Convolvulaceae",
-    origin: "Pantropical, present across Sub-Saharan Africa", note: "Native range includes tropical Africa.", fwtaChecked: false
-  },
-  "phyllanthus urinaria": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Phyllanthaceae",
-    origin: "Tropical Asia", note: "Naturalised across tropical Africa incl. Nigeria.", fwtaChecked: false
-  },
-  "gomphrena celosioides": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Amaranthaceae",
-    origin: "Brazil / South America", note: "Naturalised pantropically.", fwtaChecked: false
-  },
-  "ipomoea carnea": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Convolvulaceae",
-    origin: "Tropical Americas", note: "Invasive shrub on African wetland margins.", fwtaChecked: false
-  },
-  "ludwigia octovalvis": {
-    status: "native", statusLabel: "Native \u00b7 range debated, present pre-records", family: "Onagraceae",
-    origin: "Pantropical; POWO lists West/Central Africa in native range",
-    note: "Older Floras cite this as Jussiaea octovalvis.", fwtaChecked: false
-  },
-  "tridax procumbens": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Asteraceae",
-    origin: "Tropical Americas", note: "One of the most widely recorded naturalised weeds in Nigeria.", fwtaChecked: false
-  },
-  "chromolaena odorata": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced (invasive)", family: "Asteraceae",
-    origin: "Tropical & Subtropical America (POWO)",
-    note: "Siam weed. Accidentally introduced to Nigeria \u224e1937 via Gmelina arborea seed from Sri Lanka; became the region's dominant fallow/roadside weed within ~20 years and is now one of the most-studied invasives in West Africa (Ivens 1974; Gautier 1992).",
-    fwtaChecked: false
-  },
-  "talinum triangulare": {
-    status: "non-native", statusLabel: "Disputed \u2014 Non-native per POWO, commonly described as African in regional sources",
-    family: "Talinaceae", origin: "POWO (as Talinum fruticosum, accepted name): Tropical & Subtropical America",
-    note: "\"Waterleaf.\" Genuinely contested: Kew POWO treats the accepted name Talinum fruticosum as native to the Americas, with T. triangulare naturalised in Africa. Many West African agricultural/ethnobotanical sources describe it as native to tropical Africa \u2014 likely reflecting centuries of cultivation rather than a taxonomic disagreement with POWO. Logged here as disputed rather than picking a side.",
-    fwtaChecked: false
-  },
-  "ageratum conyzoides": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Asteraceae",
-    origin: "Mexico (POWO); naturalised across South America, Africa, Asia", note: "Common roadside/farmland weed, not native to Africa.", fwtaChecked: false
-  },
-  "synedrella nodiflora": {
-    status: "non-native", statusLabel: "Non-native \u00b7 Introduced", family: "Asteraceae",
-    origin: "Tropical & Subtropical Americas (POWO)",
-    note: "\"Cinderella weed.\" Widely naturalised in Nigeria/Ghana; Yoruba names recorded include ewe popo, aworo ona (NMPPDB).",
-    fwtaChecked: false
-  },
-  "sida acuta": {
-    status: "unknown", statusLabel: "Regional review needed \u2014 broad native range needs region-level check", family: "Malvaceae",
-    origin: "POWO lists \"Tropics & Subtropics\" (broad, ambiguous at this resolution)",
-    note: "POWO's native-range label is too coarse here to say native vs. introduced for Nigeria specifically \u2014 needs the underlying TDWG region list, not yet checked.",
-    fwtaChecked: false
-  }
-};
 
 function normalizeName(name) {
   return (name || "").toLowerCase().replace(/\s*\(.*?\)/g, "").replace(/\bcf\.?\b/gi, "").replace(/\s+/g, " ").trim();
@@ -165,18 +82,6 @@ function lookupWcvp(name) {
     }
     const rec = acc && WCVP_NIGERIA.a[acc];
     if (rec) return { rec, viaSynonym, status: rec[0], doubtful: !!(rec[1] & 2), extinct: !!(rec[1] & 4), family: rec[2], accepted: rec[3], authority: rec[4] };
-  }
-  return null;
-}
-
-function lookupCurated(name) {
-  const norm = normalizeName(name);
-  if (CURATED_SPECIES[norm]) return { key: norm, ...CURATED_SPECIES[norm] };
-  // also try just "genus species" (first two words) in case of trailing text
-  const parts = norm.split(" ");
-  if (parts.length > 2) {
-    const short = parts.slice(0, 2).join(" ");
-    if (CURATED_SPECIES[short]) return { key: short, ...CURATED_SPECIES[short] };
   }
   return null;
 }
@@ -339,20 +244,17 @@ exports.handler = async function (event) {
       curated: { checked: false, note: "Not in the curated West African species table" },
       gbif: { checked: false, note: "Not queried" },
       inaturalist: { checked: false, note: "Not queried by automated lookup \u2014 cross-check manually" },
-      fwta: { checked: false, note: "Not queried by automated lookup \u2014 verify against your FWTA volumes" },
       wikidata: { checked: false, note: "Not queried" }
     }
   };
   let gbifUsageKey = null;
 
-  // ---- 1. Curated static table (instant, no network) ----
-  const curated = lookupCurated(rawName);
+  // ---- 1. Regional species table (instant, no network) ----
   const regional = lookupRegional(rawName);
   const regionalStatus = regional && regional.nigeria_status;
-  const regionalCanResolve = regional && ["Native", "Introduced"].includes(regionalStatus);
-  const useRegional = regionalCanResolve && (!curated || curated.status === "unknown");
+  const useRegional = regional && ["Native", "Introduced"].includes(regionalStatus);
   const wcvp = lookupWcvp(rawName);
-  const useWcvp = !!wcvp && !useRegional && (!curated || curated.status === "unknown") && !wcvp.doubtful && !wcvp.extinct;
+  const useWcvp = !!wcvp && !useRegional && !wcvp.doubtful && !wcvp.extinct;
   // POWO has no public API; its underlying dataset (WCVP) is bundled, so report that.
   result.sources = {
     curated: result.sources.curated,
@@ -362,41 +264,7 @@ exports.handler = async function (event) {
     ...Object.fromEntries(Object.entries(result.sources).filter(([k]) => k !== "curated"))
   };
 
-  if (curated && !useRegional && !useWcvp) {
-    result.matchedName = curated.key.replace(/\b\w/g, c => c.toUpperCase());
-    result.family = curated.family;
-    result.status = curated.status;
-    result.statusLabel = curated.statusLabel;
-    result.origin = curated.origin;
-    result.note = curated.note;
-    result.sources.curated = { checked: true, note: "Matched against the curated West African species table (hand-verified against POWO)." };
-    result.sources.fwta = curated.fwtaChecked
-      ? { checked: true, note: "FWTA citation included in the note above." }
-      : { checked: false, note: "Not individually verified against FWTA text yet." };
-    if (curated.status === "unknown" && regional) {
-      result.sources.curated = {
-        checked: true,
-        note: "Matched against the curated West African species table (hand-verified against POWO; WCVP plant name ID: " + regional.wcvp_plant_name_id + "), but Nigeria status is not recorded. Regional review remains necessary."
-      };
-    }
-
-    // Curated matches skip the full GBIF distribution lookup (status is
-    // already hand-verified), but classification is still worth having \u2014
-    // one lightweight match call, no distribution fetch needed.
-    try {
-      const classifyUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(result.matchedName) + "&kingdom=Plantae";
-      const classifyMatch = await safeFetchJson(classifyUrl, 7000);
-      if (classifyMatch.ok && classifyMatch.data && classifyMatch.data.usageKey) {
-        const g = classifyMatch.data;
-        gbifUsageKey = g.usageKey;
-        result.classification = {
-          kingdom: g.kingdom || null, phylum: g.phylum || null, class: g.class || null,
-          order: g.order || null, family: g.family || result.family, genus: g.genus || null,
-          species: g.species || result.matchedName
-        };
-      }
-    } catch (e) { /* classification is a nice-to-have here; curated status/family/note above already stand on their own */ }
-  } else if (useRegional) {
+  if (useRegional) {
     const native = regionalStatus === "Native";
     const statusLabel = native ? "Native · Indigenous (regional table)" : "Non-native · Introduced (regional table)";
     const hasNamedSources = regional.sources && !/^S\d+(?:,\s*S\d+)*$/.test(regional.sources);
@@ -408,12 +276,12 @@ exports.handler = async function (event) {
     result.status = native ? "native" : "non-native";
     result.statusLabel = statusLabel;
     result.origin = regional.origin_category || "Nigeria status recorded in the regional table";
-    result.note = "The regional species table records Nigeria status as " + regionalStatus + ". Wider West Tropical African status: " + regional.wta_status + ".";
+    result.note = "The regional species table records Nigeria status as " + regionalStatus + ". Wider West Tropical African status: " + regional.wta_status + "." +
+      (regional.curator_note ? " " + regional.curator_note : "");
     result.sources.curated = {
       checked: true,
       note: "Matched against the curated West African species table. " + sourceNote + " Nigeria status: " + regionalStatus + "."
     };
-    result.sources.fwta = { checked: false, note: "Not individually verified against FWTA text yet." };
 
     try {
       const classifyUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(result.matchedName) + "&kingdom=Plantae";
@@ -442,7 +310,6 @@ exports.handler = async function (event) {
       checked: true,
       note: "Not individually hand-verified. Resolved from the bundled WCVP v16 Nigeria distribution table (" + (native ? "native" : "introduced") + ")."
     };
-    result.sources.fwta = { checked: false, note: "Not individually verified against FWTA text yet." };
 
     try {
       const classifyUrl = "https://api.gbif.org/v1/species/match?name=" + encodeURIComponent(result.matchedName) + "&kingdom=Plantae";

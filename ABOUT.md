@@ -31,7 +31,7 @@ back to a second one if the first is unavailable, so a flaky connection
 doesn't stop you mid-visit.
 
 **Native vs. non-native classification.** Every species gets checked
-against the hand-curated West African table and regional species database,
+against the regional species database (the curated West African table),
 with Nigeria-specific records taking precedence over automated global
 biodiversity lookups. After those, a bundled copy of Kew's WCVP v16 Nigeria
 distribution (country-level native/introduced, including synonyms) resolves
