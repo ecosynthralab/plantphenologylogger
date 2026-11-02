@@ -1,5 +1,5 @@
 /*
- * speciesOrigin.js - resolves "Native / Introduced / Regional review needed" for the Phenology Logger.
+ * speciesOrigin.js - resolves "Native / Introduced / Regional review needed" for Plant Phenology Logger.
  * Data: nigeria_origin_lookup.json (WCVP v16, Nigeria distribution; 5,940 accepted taxa + 27,095 synonyms).
  * Order of evidence:  1) your own saved reviews  ->  2) WCVP Nigeria record (name or synonym)  ->  3) "regional_review" (no Nigeria evidence).
  * Usage:

@@ -1,6 +1,6 @@
 {
   "name": "Plant Phenology Logger",
-  "short_name": "Phenology Logger",
+  "short_name": "Plant Phenology Logger",
   "description": "Field logging tool for plant phenophase observations, species compendium, and BACI/IAPS invasive-species monitoring.",
   "start_url": "/",
   "scope": "/",

@@ -1,4 +1,4 @@
-// Service worker for Ecosynthra Field. Two jobs:
+// Service worker for Plant Phenology Logger. Two jobs:
 //   1. Make the app installable (a registered SW with a fetch handler is
 //      one of the browser's requirements for the install prompt).
 //   2. Let the app shell (this single index.html + its CDN libraries) load

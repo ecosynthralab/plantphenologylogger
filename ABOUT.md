@@ -1,4 +1,4 @@
-# Ecosynthra Field — Phenology Logger
+# Plant Phenology Logger
 
 **What it is:** a field-ready app for recording how plants change through
 the seasons — when they leaf out, bud, flower, fruit, and go dormant —
@@ -18,7 +18,7 @@ survive being done standing in a field with muddy boots, and consistent
 enough that a visit in March and a visit in September are actually
 comparable.
 
-Ecosynthra Field is built around that constraint. It's a single web page —
+Plant Phenology Logger is built around that constraint. It's a single web page —
 no app store, no install step required to start using it — that turns a
 phone camera and a few taps into a structured, exportable observation
 record.
@@ -40,6 +40,19 @@ or not recorded for Nigeria, is not automatically classified as native or
 introduced in Nigeria. When the evidence does not resolve its status, the
 app says so — "Unconfirmed" — rather than guessing, because a wrong
 classification is worse than an honest gap.
+
+The separate World Plants Nigeria checklist is used as a comparison source,
+not to infer native status from a blank introduced marker. Its overlap and
+status conflicts with the curated table are summarized in the species
+database workbook's "Checklist review" sheet. Source credit: Hassler, Michael
+(1994–2026), *World Plants: Synonymic Checklist and Distribution of the World
+Flora*, Version 26.10, last updated 29 October 2026; Nigeria distribution
+checklist accessed 31 October 2026
+(https://www.worldplants.de/complete-plant-list?tx_jaxonapi_listworld%5BdistCode%5D=NGA).
+The workbook contains review statistics, not a copy of the checklist. This
+attribution does not grant permission to redistribute source data; consult
+the World Plants Data Policy and obtain any required permission before
+redistributing or publishing checklist-derived material.
 
 **Structured phenophase scoring.** Rather than free-text notes, each visit
 records a 0–4 score across five stages — vegetative, flower bud, open
