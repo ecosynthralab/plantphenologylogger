@@ -87,6 +87,10 @@ h1.pagetitle{font-family:var(--disp); font-weight:700; font-size:26px; margin:0 
 .about-copy li{padding-left:2px; margin:3px 0;}
 .about-copy a{color:var(--copper); text-decoration:underline; text-underline-offset:2px; overflow-wrap:anywhere;}
 .about-credit{font-size:12px;}
+.footer-brand,.footer-sponsor{display:inline-flex; align-items:center; gap:7px;}
+.footer-logo{display:block; object-fit:contain; flex:0 0 auto;}
+.footer-logo.ecosynthra{width:26px; height:26px;}
+.footer-logo.tetfund{width:48px; height:34px; background:#fff; border-radius:3px;}
 
 /* ---- Species tab ---- */
 .species-toolbar{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; align-items:center; justify-content:space-between;}
@@ -244,6 +248,13 @@ table.datatable td{padding:8px 8px; border-bottom:1px solid var(--line); white-s
 .section-label{font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); margin:24px 0 10px; padding-bottom:5px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center;}
 .chart-select{max-width:260px;flex:1;}
 .chart-wrap{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:20px;}
+.chart-modes{display:flex; gap:6px; margin-top:12px;}
+.chart-mode{border:1px solid var(--line); background:var(--bg); color:var(--ink-soft); border-radius:16px; padding:6px 11px; font:500 11px var(--disp); cursor:pointer;}
+.chart-mode.active{background:var(--forest-dk); color:var(--bg); border-color:var(--forest-dk);}
+html.dark .chart-mode.active{color:#0F1710;}
+.chart-caption{font-size:11.5px; line-height:1.45; color:var(--ink-soft); margin:9px 0 0;}
+.chart-canvas-wrap{position:relative; height:280px; margin-top:10px;}
+.chart-canvas-wrap canvas{width:100%; height:100%;}
 
 .yoy-card{
   margin-top:14px; padding:13px 15px; border-radius:9px; background:var(--bg2);
@@ -447,13 +458,19 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
         <select id="chartPlotSelect" class="chart-select"></select>
       </div>
 
+      <div class="chart-modes" role="group" aria-label="Timeline chart view">
+        <button type="button" class="chart-mode active" data-chart-mode="seasonal" aria-pressed="true">Seasonal profile</button>
+        <button type="button" class="chart-mode" data-chart-mode="visits" aria-pressed="false">Visit history</button>
+      </div>
+      <p class="chart-caption" id="chartCaption"></p>
+
       <div id="yoyInsight" class="yoy-card" style="display:none;"></div>
 
       <div id="storyboardWrap" style="display:none;">
         <div class="storyboard" id="storyboard"></div>
       </div>
 
-      <canvas id="phenoChart" height="220" style="margin-top:16px;"></canvas>
+      <div class="chart-canvas-wrap"><canvas id="phenoChart" role="img" aria-label="Phenophase intensity chart"></canvas></div>
       <div class="empty-state" id="chartEmpty" style="display:none;">Log at least one entry for this species to see a timeline.</div>
     </div>
 
@@ -502,6 +519,12 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
       <p>Observations are stored locally on the device. When team sync is configured, records and photos can be shared across devices; without it, data and photos remain local to that device.</p>
       <p>Built by Ecosynthra Lab.</p>
     </div>
+
+    <div class="card about-copy">
+      <h2>Funding acknowledgment</h2>
+      <p>This project is sponsored by the Tertiary Education Trust Fund (TETFund) through the Institution-Based Research (IBR) 2026 program.</p>
+      <p class="about-credit"><strong>Reference number:</strong> TETF/ES/DR&amp;D/CE/UNI/AWKA/IBR/2026/VOL.1/42</p>
+    </div>
   </section>
 
 </main>
@@ -520,7 +543,8 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
 </div>
 
 <footer>
-  <span id="footerAttr"></span>
+  <span class="footer-brand"><img class="footer-logo ecosynthra" src="ecosynthra-logo.png" alt="Ecosynthra Lab logo"><span id="footerAttr"></span></span>
+  <span class="footer-sponsor"><img class="footer-logo tetfund" src="tetfund-logo.png" alt="TETFund logo"><span>Supported by TETFund · Institution-Based Research 2026</span></span>
   <span id="syncStatus">Local only (no cloud sync configured)</span>
   <button id="installAppBtn" style="display:none; margin-left:12px; background:var(--copper); color:#fff; border:none; border-radius:6px; padding:5px 11px; font-family:var(--mono); font-size:10.5px; letter-spacing:.03em; cursor:pointer;">Install app</button>
 </footer>
@@ -2381,6 +2405,18 @@ async function refreshLog(){
 }
 document.getElementById('chartSpeciesSelect').addEventListener('change', ()=>{ updatePlotFilterOptions(); renderChart(); });
 document.getElementById('chartPlotSelect').addEventListener('change', renderChart);
+let phenoChartMode = 'seasonal';
+document.querySelectorAll('[data-chart-mode]').forEach(button=>{
+  button.addEventListener('click', ()=>{
+    phenoChartMode = button.dataset.chartMode;
+    document.querySelectorAll('[data-chart-mode]').forEach(modeButton=>{
+      const active = modeButton.dataset.chartMode === phenoChartMode;
+      modeButton.classList.toggle('active', active);
+      modeButton.setAttribute('aria-pressed', String(active));
+    });
+    renderChart();
+  });
+});
 
 function updatePlotFilterOptions(){
   const species = document.getElementById('chartSpeciesSelect').value;
@@ -2463,6 +2499,7 @@ function renderChart(){
   const plotFilter = document.getElementById('chartPlotSelect').value;
   const canvas = document.getElementById('phenoChart');
   const emptyEl = document.getElementById('chartEmpty');
+  const caption = document.getElementById('chartCaption');
   const records = (window._records||[])
     .filter(r=>r.species===species && (!plotFilter || r.plotId===plotFilter))
     .sort((a,b)=>(a.visitDate||'').localeCompare(b.visitDate||''));
@@ -2470,6 +2507,29 @@ function renderChart(){
   renderStoryboard(records);
   if (species && records.length) renderYoyInsight(records, species, plotFilter);
   else document.getElementById('yoyInsight').style.display = 'none';
+
+  const monthLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const phaseSeries = [
+    {label:'Vegetative', key:'vegetative', color:'#6B8A5A', fill:'rgba(107,138,90,0.16)'},
+    {label:'Flower bud', key:'flowerBud', color:'#C08A2E', fill:'rgba(192,138,46,0.15)'},
+    {label:'Open flower', key:'openFlower', color:'#B5548A', fill:'rgba(181,84,138,0.14)'},
+    {label:'Fruit/pod', key:'fruitPod', color:'#A2572E', fill:'rgba(162,87,46,0.14)'},
+    {label:'Senescent', key:'senescent', color:'#8A7E68', fill:'rgba(138,126,104,0.13)'},
+  ];
+  const monthlyRecords = monthLabels.map(()=>[]);
+  records.forEach(record=>{
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(record.visitDate||'') ? record.visitDate : '';
+    const month = date ? Number(date.slice(5,7)) - 1 : -1;
+    if (month >= 0 && month < 12) monthlyRecords[month].push(record);
+  });
+  const monthlyVisitCount = monthlyRecords.reduce((sum, month)=>sum+month.length, 0);
+  const observedYears = new Set(records
+    .filter(r=>/^\d{4}-\d{2}-\d{2}$/.test(r.visitDate||''))
+    .map(r=>r.visitDate.slice(0,4)));
+  const isSeasonal = phenoChartMode === 'seasonal';
+  caption.textContent = isSeasonal
+    ? `Monthly mean Fournier scores across ${observedYears.size} year${observedYears.size===1?'':'s'} (${monthlyVisitCount} dated visit${monthlyVisitCount===1?'':'s'}). Months without observations are left blank.`
+    : 'Recorded Fournier scores for each visit, shown in date order.';
 
   // Chart.js registers a chart against its canvas as soon as it's constructed,
   // even if that canvas was hidden (display:none) at the time — which is what
@@ -2480,32 +2540,59 @@ function renderChart(){
   // down first.
   const existingChart = Chart.getChart(canvas) || window._phenoChartInstance;
   if (existingChart) { existingChart.destroy(); window._phenoChartInstance = null; }
-  if (!species || records.length === 0) { canvas.style.display='none'; emptyEl.style.display='block'; return; }
+  if (!species || records.length === 0 || (isSeasonal && monthlyVisitCount === 0)) {
+    canvas.style.display='none';
+    emptyEl.textContent = records.length && isSeasonal
+      ? 'No dated visits are available for a seasonal profile. Switch to Visit history to see the records.'
+      : 'Log at least one entry for this species to see a timeline.';
+    emptyEl.style.display='block';
+    return;
+  }
   canvas.style.display='block'; emptyEl.style.display='none';
 
   const isDark = document.documentElement.classList.contains('dark');
   const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)';
   const textColor = isDark ? '#9BA89E' : '#5C6B60';
+  const meansForMonth = (month, key)=>{
+    const values = monthlyRecords[month].map(r=>plotScore(r[key])).filter(value=>value!==null);
+    return values.length ? values.reduce((sum,value)=>sum+value,0)/values.length : null;
+  };
 
   window._phenoChartInstance = new Chart(canvas, {
     type: 'line',
     data: {
-      labels: records.map(r=>r.visitDate),
-      datasets: [
-        {label:'Vegetative', data: records.map(r=>plotScore(r.vegetative)), borderColor:'#6B8A5A', tension:.3, spanGaps:false},
-        {label:'Flower bud', data: records.map(r=>plotScore(r.flowerBud)), borderColor:'#C08A2E', tension:.3, spanGaps:false},
-        {label:'Open flower', data: records.map(r=>plotScore(r.openFlower)), borderColor:'#B5548A', tension:.3, spanGaps:false},
-        {label:'Fruit/pod', data: records.map(r=>plotScore(r.fruitPod)), borderColor:'#A2572E', tension:.3, spanGaps:false},
-        {label:'Senescent', data: records.map(r=>plotScore(r.senescent)), borderColor:'#8A7E68', tension:.3, spanGaps:false},
-      ]
+      labels: isSeasonal ? monthLabels : records.map(r=>r.visitDate||'Undated'),
+      datasets: phaseSeries.map(phase=>({
+        label:phase.label,
+        data:isSeasonal
+          ? monthLabels.map((_,month)=>meansForMonth(month,phase.key))
+          : records.map(r=>plotScore(r[phase.key])),
+        borderColor:phase.color,
+        backgroundColor:isSeasonal ? phase.fill : 'transparent',
+        fill:isSeasonal ? 'origin' : false,
+        tension:isSeasonal ? 0.4 : 0.3,
+        pointRadius:isSeasonal ? 3 : 2,
+        pointHoverRadius:5,
+        spanGaps:false
+      }))
     },
     options: {
       responsive:true,
+      maintainAspectRatio:false,
       scales:{
-        y:{min:0,max:4,ticks:{stepSize:1,color:textColor},grid:{color:gridColor}},
-        x:{ticks:{color:textColor},grid:{color:gridColor}}
+        y:{min:0,max:4,title:{display:true,text:isSeasonal?'Mean Fournier score (0–4)':'Fournier score (0–4)',color:textColor,font:{size:10}},ticks:{stepSize:1,color:textColor},grid:{color:gridColor}},
+        x:{ticks:{color:textColor,maxRotation:0,autoSkip:!isSeasonal,maxTicksLimit:12},grid:{color:gridColor}}
       },
-      plugins:{legend:{labels:{color:textColor,boxWidth:12,font:{size:10.5}}}}
+      plugins:{
+        legend:{position:'bottom',labels:{color:textColor,boxWidth:12,usePointStyle:true,pointStyle:'line',padding:14,font:{size:10.5}}},
+        tooltip:{callbacks:{title(items){
+          if (!items.length) return '';
+          if (!isSeasonal) return records[items[0].dataIndex]?.visitDate || 'Undated';
+          const month = items[0].dataIndex;
+          const count = monthlyRecords[month].length;
+          return `${monthLabels[month]} · ${count} visit${count===1?'':'s'}`;
+        }}}
+      }
     }
   });
 }

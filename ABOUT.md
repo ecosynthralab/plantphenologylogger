@@ -59,10 +59,12 @@ records a 0–4 score across five stages — vegetative, flower bud, open
 flower, fruit/pod, senescent — the format that actually supports plotting
 change over time, not just describing a single visit.
 
-**A life-cycle timeline per species.** Log the same species across
-multiple visits and the app charts how its phenophase scores move through
-the year, with a year-over-year comparison ("first flowering was 9 days
-earlier than last year") once there's more than one season of data.
+**A life-cycle timeline per species.** Explore a seasonal profile of
+monthly mean phenophase scores, or switch to visit history to see each
+recorded observation in date order. The seasonal profile leaves months
+without observations blank rather than estimating them. A year-over-year
+comparison ("first flowering was 9 days earlier than last year") appears
+once there's more than one season of data.
 
 **Works offline, syncs when it can.** Every observation is saved to the
 device immediately — no signal required in the field. If cloud sync is
@@ -86,6 +88,13 @@ African plants.
 Field botanists, ecology students, and conservation teams doing repeat-visit
 phenology monitoring — anyone who needs the data collection to be as fast
 and reliable as the biology it's tracking, on hardware that's just a phone.
+
+## Funding acknowledgment
+
+This project is sponsored by the Tertiary Education Trust Fund (TETFund)
+through the Institution-Based Research (IBR) 2026 program.
+
+**Reference number:** TETF/ES/DR&D/CE/UNI/AWKA/IBR/2026/VOL.1/42
 
 ## Under the hood, briefly
 
