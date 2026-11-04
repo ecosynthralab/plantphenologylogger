@@ -359,6 +359,7 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
       <div class="coord-readout empty" id="coordReadout">No location captured yet.</div>
       <span class="manual-toggle" id="manualToggle">Enter coordinates manually instead &rarr;</span>
       <div class="manual-fields" id="manualFields">
+        <div style="grid-column:1/-1"><label>Paste coordinates</label><input type="text" id="manPaste" placeholder="e.g. 6.2476416, 7.1177055" autocomplete="off"><div class="hint" style="margin-top:4px">Accepted formats: <code>6.2476, 7.1177</code> &middot; <code>6.2476 7.1177</code> &middot; <code>Lat: 6.2476 Lon: 7.1177</code> &middot; <code>6.2476 N, 7.1177 E</code> &middot; <code>6.2 S, 7.1 W</code> (S/W = negative)</div></div>
         <div><label>Latitude</label><input type="text" id="manLat" placeholder="e.g. 6.2521"></div>
         <div><label>Longitude</label><input type="text" id="manLon" placeholder="e.g. 7.0197"></div>
       </div>
@@ -1823,8 +1824,29 @@ document.getElementById('manualToggle').addEventListener('click', ()=>{
   document.getElementById(id).addEventListener('input', ()=>{
     const lat = parseFloat(document.getElementById('manLat').value);
     const lon = parseFloat(document.getElementById('manLon').value);
-    if (!isNaN(lat) && !isNaN(lon)) updateLocationUI({ lat, lon, accuracy: null, source: 'manual entry' });
+    if (validGps(lat, lon)) updateLocationUI({ lat, lon, accuracy: null, source: 'manual entry' });
   });
+});
+
+// Accepts "6.2476, 7.1177", "6.2476 7.1177", "Lat: 6.2476 Lon: 7.1177",
+// and "6.2476 N, 7.1177 E" (S/W make the value negative).
+function parseCoordinatePair(text) {
+  const m = String(text).match(/(-?\d+(?:\.\d+)?)\s*°?\s*([NSns])?\D+?(-?\d+(?:\.\d+)?)\s*°?\s*([EWew])?/);
+  if (!m) return null;
+  let lat = parseFloat(m[1]), lon = parseFloat(m[3]);
+  if (/s/i.test(m[2] || '')) lat = -Math.abs(lat);
+  if (/w/i.test(m[4] || '')) lon = -Math.abs(lon);
+  return validGps(lat, lon) ? { lat, lon } : null;
+}
+document.getElementById('manPaste').addEventListener('input', (e)=>{
+  const text = e.target.value.trim();
+  if (!text) return;
+  const pair = parseCoordinatePair(text);
+  if (!pair) { e.target.style.borderColor = 'var(--nonnative)'; return; }
+  e.target.style.borderColor = '';
+  document.getElementById('manLat').value = pair.lat;
+  document.getElementById('manLon').value = pair.lon;
+  updateLocationUI({ lat: pair.lat, lon: pair.lon, accuracy: null, source: 'manual entry' });
 });
 captureGPS();
 
@@ -2041,6 +2063,14 @@ async function extractPhotoMetadata(file) {
   return { gps, dateValue };
 }
 
+// Android Chrome gives web pages a location-redacted copy of gallery photos, so
+// a missing EXIF GPS is expected. Never substitute the device's current
+// position: uploads are for data captured elsewhere.
+function noPhotoGpsHint() {
+  document.getElementById('manualFields').classList.add('active');
+  return ' Android hides photo location from web pages \u2014 enter the coordinates in the paste box under Location (e.g. copy them from Google Photos or iNaturalist).';
+}
+
 document.getElementById('photoInput').addEventListener('change', (e)=>{
   const file = e.target.files[0];
   if (!file) return;
@@ -2081,6 +2111,11 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
 
   extractPhotoMetadata(file).then(({ gps, dateValue }) => {
     const foundGps = gps && applyPhotoGps(gps.latitude, gps.longitude);
+    // For uploads, a device-GPS fix taken at page load is not where the photo
+    // was shot; clear it rather than silently attach it to the observation.
+    if (!foundGps && !e.target.hasAttribute('capture') && currentLocation && currentLocation.source === 'device GPS') {
+      updateLocationUI(null);
+    }
     const foundDate = applyPhotoDate(dateValue);
     // The date is set programmatically (no 'change' event), so refresh the
     // weather preview now that both location and date are final.
@@ -2092,9 +2127,9 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
       } else if (foundGps) {
         statusEl.textContent = 'Photo attached - GPS extracted from EXIF.';
       } else if (foundDate) {
-        statusEl.textContent = 'Photo attached - date extracted from EXIF. GPS metadata was not found.';
+        statusEl.textContent = 'Photo attached - date extracted from EXIF. GPS metadata was not found.' + noPhotoGpsHint();
       } else {
-        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found. Phone gallery pickers often strip location from photos; use device GPS or manual entry instead, or re-upload via the Files picker.';
+        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found.' + noPhotoGpsHint();
       }
     }
     statusEl.className = 'status-msg';
