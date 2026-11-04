@@ -427,6 +427,7 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
       <input type="text" id="p-cooccurring" placeholder="e.g. Tridax procumbens, Chamaecrista mimosoides">
       <label>Weather / soil condition</label>
       <input type="text" id="p-weathersoil" placeholder="e.g. overcast, soil moist after rain">
+      <div class="status-msg" id="p-weather-preview" style="text-align:left">Weather will be recorded once a location is captured.</div>
       <label>Notes</label>
       <textarea id="p-notes" placeholder="Field notes..."></textarea>
 
@@ -1790,6 +1791,7 @@ function drawAccRing(acc){
 }
 function updateLocationUI(loc){
   currentLocation = loc;
+  if (typeof refreshWeatherPreview === 'function') refreshWeatherPreview();
   const accEl = document.getElementById('accVal');
   const tagEl = document.getElementById('accTag');
   const coordEl = document.getElementById('coordReadout');
@@ -1983,15 +1985,20 @@ async function extractPhotoMetadata(file) {
   let dateValue = null;
 
   if (window.exifr) {
+    // Independent try blocks: exifr.parse resolves undefined for files with no
+    // EXIF, which used to throw and discard a GPS result that had been found.
     try {
-      const [gpsResult, metadata] = await Promise.all([
-        exifr.gps(file),
-        exifr.parse(file, ['DateTimeOriginal', 'CreateDate', 'DateTimeDigitized'])
-      ]);
-      gps = gpsResult;
-      dateValue = metadata.DateTimeOriginal || metadata.CreateDate || metadata.DateTimeDigitized;
+      const gpsResult = await exifr.gps(file);
+      if (gpsResult && validGps(gpsResult.latitude, gpsResult.longitude) &&
+          !(gpsResult.latitude === 0 && gpsResult.longitude === 0)) gps = gpsResult;
     } catch (error) {
-      console.warn('Modern EXIF metadata parsing failed, trying fallback:', error.message);
+      console.warn('exifr GPS parsing failed:', error.message);
+    }
+    try {
+      const metadata = await exifr.parse(file, ['DateTimeOriginal', 'CreateDate', 'DateTimeDigitized']);
+      dateValue = metadata && (metadata.DateTimeOriginal || metadata.CreateDate || metadata.DateTimeDigitized);
+    } catch (error) {
+      console.warn('exifr date parsing failed:', error.message);
     }
   }
 
@@ -1999,7 +2006,10 @@ async function extractPhotoMetadata(file) {
     try {
       const legacyMetadata = await new Promise((resolve, reject) => {
         if (!window.EXIF) return reject(new Error('EXIF.js is unavailable'));
+        // EXIF.getData never calls back for non-JPEG files
+        const timer = setTimeout(() => reject(new Error('EXIF.js timed out')), 4000);
         EXIF.getData(file, function(){
+          clearTimeout(timer);
           const date = EXIF.getTag(this, 'DateTimeOriginal') ||
             EXIF.getTag(this, 'CreateDate') ||
             EXIF.getTag(this, 'DateTimeDigitized');
@@ -2060,6 +2070,9 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
   extractPhotoMetadata(file).then(({ gps, dateValue }) => {
     const foundGps = gps && applyPhotoGps(gps.latitude, gps.longitude);
     const foundDate = applyPhotoDate(dateValue);
+    // The date is set programmatically (no 'change' event), so refresh the
+    // weather preview now that both location and date are final.
+    refreshWeatherPreview();
     const statusEl = document.getElementById('photoStatus');
     if (statusEl.textContent === 'Photo attached.') {
       if (foundGps && foundDate) {
@@ -2069,7 +2082,7 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
       } else if (foundDate) {
         statusEl.textContent = 'Photo attached - date extracted from EXIF. GPS metadata was not found.';
       } else {
-        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found. Use device GPS or manual entry instead.';
+        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found. Phone gallery pickers often strip location from photos; use device GPS or manual entry instead.';
       }
     }
     statusEl.className = 'status-msg';
@@ -2219,6 +2232,89 @@ document.getElementById('aiIdBtn').addEventListener('click', async ()=>{
 // =====================================================================
 document.getElementById('p-visitdate').value = todayStr();
 
+// Current conditions from Open-Meteo (free, no API key). Returns null when
+// there is no location, the device is offline, or the request fails/times out,
+// so saving an observation is never blocked by weather.
+const WMO_CODES = {0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Rime fog',51:'Light drizzle',53:'Drizzle',55:'Dense drizzle',56:'Freezing drizzle',57:'Dense freezing drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',66:'Freezing rain',67:'Heavy freezing rain',71:'Light snow',73:'Snow',75:'Heavy snow',77:'Snow grains',80:'Light showers',81:'Showers',82:'Violent showers',85:'Snow showers',86:'Heavy snow showers',95:'Thunderstorm',96:'Thunderstorm with hail',99:'Severe thunderstorm with hail'};
+// Visit date today (or later) -> live current conditions. Past visit date ->
+// historical hourly data for that date at 12:00 local time (archive data lags
+// a few days, so very recent past dates may return nothing).
+const WEATHER_VARS = 'temperature_2m,relative_humidity_2m,precipitation,weather_code,cloud_cover,wind_speed_10m,surface_pressure';
+async function fetchWeather(loc, date) {
+  if (!loc || !validGps(loc.lat, loc.lon)) return null;
+  const historical = !!date && date < todayStr();
+  const pos = 'latitude=' + encodeURIComponent(loc.lat) + '&longitude=' + encodeURIComponent(loc.lon);
+  const url = historical
+    ? 'https://archive-api.open-meteo.com/v1/archive?' + pos + '&start_date=' + date + '&end_date=' + date + '&hourly=' + WEATHER_VARS + '&timezone=auto'
+    : 'https://api.open-meteo.com/v1/forecast?' + pos + '&current=' + WEATHER_VARS;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    const json = await res.json();
+    let c;
+    if (historical) {
+      const h = json.hourly;
+      if (!h || !h.time || h.temperature_2m[12] == null) return null;
+      c = { time: h.time[12] };
+      Object.keys(h).forEach(k => { if (k !== 'time') c[k] = h[k][12]; });
+    } else {
+      c = json.current;
+    }
+    if (!c) return null;
+    return {
+      historical,
+      temperatureC: c.temperature_2m,
+      humidityPct: c.relative_humidity_2m,
+      precipitationMm: c.precipitation,
+      cloudCoverPct: c.cloud_cover,
+      windSpeedKmh: c.wind_speed_10m,
+      pressureHpa: c.surface_pressure,
+      conditions: WMO_CODES[c.weather_code] || '',
+      observedAt: c.time,
+      source: 'Open-Meteo'
+    };
+  } catch (e) {
+    console.warn('Weather lookup failed:', e.message);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Live preview in the entry form. The reading shown here is what gets saved.
+var weatherPreview = { key: null, data: null };
+var weatherReq = 0;
+function weatherKey() {
+  const d = document.getElementById('p-visitdate').value;
+  return currentLocation && validGps(currentLocation.lat, currentLocation.lon)
+    ? currentLocation.lat.toFixed(3) + ',' + currentLocation.lon.toFixed(3) + '|' + d : null;
+}
+function renderWeatherPreview(state) {
+  const el = document.getElementById('p-weather-preview');
+  const w = weatherPreview.data;
+  if (state === 'loading') el.textContent = 'Reading weather\u2026';
+  else if (state === 'nolocation') el.textContent = 'Weather will be recorded once a location is captured.';
+  else if (!w) el.textContent = 'Weather unavailable for this location/date (it will be saved without weather).';
+  else el.textContent = (w.historical ? 'Historical weather (12:00 on visit date): ' : 'Current weather: ') +
+    [w.conditions, w.temperatureC + '\u00b0C', w.humidityPct + '% humidity', w.precipitationMm + ' mm rain',
+     w.cloudCoverPct + '% cloud', w.windSpeedKmh + ' km/h wind', w.pressureHpa + ' hPa'].filter(Boolean).join(' \u00b7 ');
+}
+async function refreshWeatherPreview() {
+  const key = weatherKey();
+  if (!key) { weatherPreview = { key: null, data: null }; renderWeatherPreview('nolocation'); return null; }
+  if (weatherPreview.key === key && weatherPreview.data) { renderWeatherPreview(); return weatherPreview.data; }
+  const req = ++weatherReq;
+  renderWeatherPreview('loading');
+  const data = await fetchWeather(currentLocation, document.getElementById('p-visitdate').value);
+  if (req !== weatherReq) return data; // a newer refresh superseded this one
+  weatherPreview = { key, data };
+  renderWeatherPreview();
+  return data;
+}
+document.getElementById('p-visitdate').addEventListener('change', refreshWeatherPreview);
+
 document.getElementById('saveBtn').addEventListener('click', async ()=>{
   const statusEl = document.getElementById('p-status');
   const speciesSel = document.getElementById('p-species');
@@ -2236,8 +2332,13 @@ document.getElementById('saveBtn').addEventListener('click', async ()=>{
   if (!speciesName) { statusEl.textContent = 'Species is required.'; statusEl.className='status-msg err'; return; }
   if (!currentLocation) { statusEl.textContent = 'No location captured \u2014 save anyway, or enter coordinates manually.'; }
 
+  statusEl.className = 'status-msg';
+  statusEl.textContent = 'Reading current weather\u2026';
+  const weather = await refreshWeatherPreview();
+
   const record = {
     id: uid(),
+    weather,
     visitDate: document.getElementById('p-visitdate').value,
     plotId: document.getElementById('p-plotid').value,
     species: speciesName,
@@ -2814,12 +2915,13 @@ document.getElementById('export-json').addEventListener('click', async ()=>{
 
 document.getElementById('export-csv').addEventListener('click', async ()=>{
   const records = await fetchAllRecords('obs:');
-  const headers = ['visitDate','species','plotId','vegetative','flowerBud','openFlower','fruitPod','senescent','growthStage','height','observer','cooccurring','weatherSoil','notes','lat','lon','accuracy','savedAt'];
+  const headers = ['visitDate','species','plotId','vegetative','flowerBud','openFlower','fruitPod','senescent','growthStage','height','observer','cooccurring','weatherSoil','notes','lat','lon','accuracy','temperatureC','humidityPct','precipitationMm','cloudCoverPct','windSpeedKmh','pressureHpa','conditions','savedAt'];
   const rows = [headers.join(',')].concat(records.map(r => headers.map(h=>{
     let v;
     if (h==='lat') v = r.location?r.location.lat:'';
     else if (h==='lon') v = r.location?r.location.lon:'';
     else if (h==='accuracy') v = r.location&&r.location.accuracy!=null?r.location.accuracy:'';
+    else if (['temperatureC','humidityPct','precipitationMm','cloudCoverPct','windSpeedKmh','pressureHpa','conditions'].includes(h)) v = (r.weather && r.weather[h]) ?? '';
     else v = r[h] ?? '';
     v = String(v).replace(/"/g,'""');
     return /[,"\n]/.test(v) ? `"${v}"` : v;
@@ -2839,7 +2941,11 @@ document.getElementById('export-xlsx').addEventListener('click', async ()=>{
     'Observer': r.observer, 'Co-occurring Flowering Species': r.cooccurring, 'Weather/Soil': r.weatherSoil, 'Notes': r.notes,
     'Latitude': r.location?r.location.lat:'', 'Longitude': r.location?r.location.lon:'',
     'GPS Accuracy (m)': r.location&&r.location.accuracy!=null?r.location.accuracy:'',
-    'Location Source': r.location?r.location.source:'', 'Has Photo': r.hasPhoto?'Yes':'No', 'Saved At': r.savedAt
+    'Location Source': r.location?r.location.source:'',
+    'Temperature (°C)': r.weather?r.weather.temperatureC:'', 'Humidity (%)': r.weather?r.weather.humidityPct:'',
+    'Precipitation (mm)': r.weather?r.weather.precipitationMm:'', 'Cloud Cover (%)': r.weather?r.weather.cloudCoverPct:'',
+    'Wind Speed (km/h)': r.weather?r.weather.windSpeedKmh:'', 'Pressure (hPa)': r.weather?r.weather.pressureHpa:'',
+    'Weather Conditions': r.weather?r.weather.conditions:'', 'Has Photo': r.hasPhoto?'Yes':'No', 'Saved At': r.savedAt
   }));
 
   const speciesMap = {};
