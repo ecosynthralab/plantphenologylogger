@@ -1908,12 +1908,17 @@ async function safeFetchJsonClient(url, options){
 
 document.getElementById('takePhotoBtn').addEventListener('click', ()=>{
   const input = document.getElementById('photoInput');
+  input.setAttribute('accept', 'image/*');
   input.setAttribute('capture', 'environment');
   input.click();
 });
 document.getElementById('uploadPhotoBtn').addEventListener('click', ()=>{
   const input = document.getElementById('photoInput');
   input.removeAttribute('capture');
+  // Android Chrome opens the system Photos picker for accept="image/*", which
+  // strips GPS from the file. Without an accept filter it opens the Files
+  // picker, which returns the original file with its EXIF location intact.
+  input.removeAttribute('accept');
   input.click();
 });
 
@@ -2039,6 +2044,13 @@ async function extractPhotoMetadata(file) {
 document.getElementById('photoInput').addEventListener('change', (e)=>{
   const file = e.target.files[0];
   if (!file) return;
+  if (!/^image\//.test(file.type)) {
+    const s = document.getElementById('photoStatus');
+    s.textContent = 'That file is not an image. Please choose a photo.';
+    s.className = 'status-msg err';
+    e.target.value = '';
+    return;
+  }
   currentPhotoMediaType = file.type;
   const reader = new FileReader();
   reader.onload = async (ev) => {
@@ -2082,7 +2094,7 @@ document.getElementById('photoInput').addEventListener('change', (e)=>{
       } else if (foundDate) {
         statusEl.textContent = 'Photo attached - date extracted from EXIF. GPS metadata was not found.';
       } else {
-        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found. Phone gallery pickers often strip location from photos; use device GPS or manual entry instead.';
+        statusEl.textContent = 'Photo attached - no EXIF date or GPS metadata found. Phone gallery pickers often strip location from photos; use device GPS or manual entry instead, or re-upload via the Files picker.';
       }
     }
     statusEl.className = 'status-msg';
