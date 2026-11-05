@@ -327,7 +327,7 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
     <div class="subhead">
       <div class="eyebrow">Field Compendium</div>
       <h1 class="pagetitle">Species observed so far</h1>
-      <div class="pagesub">Native/non-native status checked against the curated West African species table and regional records, then supplemented with GBIF and other botanical sources. Entries without Nigeria-specific evidence remain flagged for regional review.</div>
+      <div class="pagesub">Native/non-native status is checked against the curated West African species table, the GRIIS Nigeria checklist, WCVP, and GBIF. GRIIS records introduced or invasive alien taxa; it does not rank agricultural damage. Missing checklist records are not treated as proof of native status.</div>
     </div>
     <div class="species-toolbar">
       <div class="species-filters" id="spFilters"></div>
@@ -1178,7 +1178,7 @@ const spPhenoMeta = {
   "senescent": {label:"Senescent", color:"#8A7E68"},
   "unrecorded": {label:"Unrecorded", color:"#9BA89E"}
 };
-const spSourceLabels = { curated:"Curated table", powo:"Kew POWO / WCVP", gbif:"GBIF", gbifNames:"GBIF vernacular names", inaturalist:"iNaturalist", fwta:"FWTA", wikidata:"Wikidata (local names)" };
+const spSourceLabels = { curated:"Curated table", griis:"GRIIS Nigeria (via GBIF)", powo:"Kew POWO / WCVP", gbif:"GBIF", gbifNames:"GBIF vernacular names", inaturalist:"iNaturalist", fwta:"FWTA", wikidata:"Wikidata (local names)" };
 
 // Guards against any species row whose status/phenophase doesn't exactly
 // match one of the keys above — plausible for entries carrying data from
@@ -1288,9 +1288,13 @@ async function openSpModal(id){
   const modal = document.getElementById('spModalContent');
   const sourceRows = Object.keys(s.sources||{}).filter(k => !(k === 'fwta' && !s.sources[k].checked)).map(k=>{
     const src = s.sources[k];
+    const sourceLabel = spSourceLabels[k]||k;
+    const sourceLabelMarkup = k === 'griis'
+      ? `<a href="https://www.gbif.org/dataset/1e049ac8-c0af-4ffe-aa7e-48a443c94635" target="_blank" rel="noopener noreferrer" style="color:var(--forest);text-decoration:underline;">${sourceLabel}</a>`
+      : sourceLabel;
     return `<div class="source-row">
       <div class="source-check ${src.checked?'yes':'no'}">${src.checked?'&#10003;':''}</div>
-      <div><b style="font-family:var(--mono);font-size:11px;">${spSourceLabels[k]||k}:</b> <span style="color:var(--ink-soft);">${src.note}</span></div>
+      <div><b style="font-family:var(--mono);font-size:11px;">${sourceLabelMarkup}:</b> <span style="color:var(--ink-soft);">${src.note}</span></div>
     </div>`;
   }).join('');
 
@@ -1428,7 +1432,7 @@ async function openSpModal(id){
     const newSci = document.getElementById('renameSciInput').value.trim();
     const newCommon = document.getElementById('renameCommonInput').value.trim();
     if (!newSci) { alert('Enter at least a scientific name before saving.'); return; }
-    renameSaveBtn.textContent = 'Checking POWO / GBIF\u2026';
+    renameSaveBtn.textContent = 'Checking Nigeria sources\u2026';
     renameSaveBtn.disabled = true;
     const outcome = await renameSpeciesEntry(s, newCommon, newSci);
     renderSpFilters(); renderSpGrid(); populateSpeciesDropdown();
@@ -1504,7 +1508,7 @@ async function deleteSpecies(s){
 
 async function retryClassification(s){
   const btn = document.getElementById('retryClassifyBtn');
-  btn.textContent = 'Checking POWO / GBIF\u2026'; btn.disabled = true;
+  btn.textContent = 'Checking Nigeria sources\u2026'; btn.disabled = true;
   let result;
   try {
     const res = await fetch('/.netlify/functions/classify-species', {
@@ -1731,6 +1735,7 @@ async function classifyAndAddSpecies(name, photoDataUri) {
     result = { status:'unknown', statusLabel:'Regional review needed', origin:'\u2014', family:null, localNames: [],
       note:'Automated classification unavailable (offline or function not deployed) - regional review is needed.',
       sources:{ curated:{checked:false,note:'Not reachable'}, gbif:{checked:false,note:'Lookup not reachable'},
+                griis:{checked:false,note:'Lookup not reachable'},
                 inaturalist:{checked:false,note:'Not queried'},
                 wikidata:{checked:false,note:'Not queried'} } };
   }
