@@ -99,10 +99,16 @@ through the Institution-Based Research (IBR) 2026 program.
 ## Under the hood, briefly
 
 A single-page app with photo ID (Gemini, with Mistral as fallback, plus
-Pl@ntNet), species classification (a curated table backed by GBIF and
-Wikidata), charts (Chart.js), spreadsheet export (SheetJS), and optional
-cross-device sync via Supabase. Hosted on Netlify. See `README.md` for the
-technical setup and deployment details.
+Pl@ntNet), species classification (a curated table, WCVP, the Nigeria GRIIS
+checklist, GBIF, and Wikidata), charts (Chart.js), spreadsheet export
+(SheetJS), and optional cross-device sync via Supabase. Hosted on Netlify.
+See `README.md` for the technical setup and deployment details.
+
+The Nigeria GRIIS checklist is queried through the public GBIF API and shown
+as a separate source in each species record. GRIIS confirms checklist
+inclusion as an introduced or invasive alien taxon; it does not assess
+agricultural damage, and a missing record is not evidence that a species is
+native. Cite and check the dataset's terms when reusing its records.
 
 Classification also checks GBIF vernacular names and the iNaturalist taxon
 database. Regional names are stored separately for Igbo (`ig`), Yoruba

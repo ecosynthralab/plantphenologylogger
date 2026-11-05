@@ -8,13 +8,16 @@
 //   2. WCVP v16 Nigeria distribution (bundled) — country-level native /
 //      introduced, used when 1 does not resolve. Doubtful/extinct records
 //      are left for review.
-//   3. GBIF (official, documented API — https://techdocs.gbif.org/en/openapi/)
+//   3. GRIIS Nigeria checklist (published through GBIF) — independent
+//      evidence for introduced/invasive status; absence is not evidence
+//      of native status.
+//   4. GBIF (official, documented API — https://techdocs.gbif.org/en/openapi/)
 //      — species/match to resolve the name, then /species/{key}/distributions
 //      for establishmentMeans. Used only when earlier sources do not resolve status.
 //      This REPLACES the old POWO scrape entirely — POWO has no official API
 //      (confirmed: IPNI's own site states "there is no publicly available
 //      API"), so it's no longer called live at all.
-//   4. Wikidata SPARQL (official, documented) — best-effort lookup for any
+//   5. Wikidata SPARQL (official, documented) — best-effort lookup for any
 //      local-language common names (P1843) in Yoruba/Igbo/Hausa. Coverage is
 //      genuinely sparse for West African plants as of this writing — this
 //      is a bonus layer, not a primary source, and is never allowed to slow
@@ -28,6 +31,7 @@ const NIGERIA_HINTS = [
 const LOCAL_LANGUAGES = { ig: "Igbo", yo: "Yoruba", ha: "Hausa" };
 const AFRICAN_ISO2 = new Set("DZ AO BJ BW BF BI CM CV CF TD KM CG CD CI DJ EG GQ ER SZ ET GA GM GH GN GW KE LS LR LY MG MW ML MR MU MA MZ NA NE NG RW ST SN SC SL SO ZA SS SD TZ TG TN UG ZM ZW RE YT SH EH".split(" "));
 const APP_USER_AGENT = "Ecosynthra-Phenology-Logger/1.0 (species classification; contact site maintainer)";
+const GRIIS_NIGERIA_DATASET_KEY = "1e049ac8-c0af-4ffe-aa7e-48a443c94635";
 const REGIONAL_SPECIES = require("../../Species list/phenology_logger_species_database.json");
 const WCVP_NIGERIA = require("../../Species list/nigeria_origin_lookup.json");
 
@@ -208,6 +212,61 @@ async function lookupGbifVernacularNames(usageKey) {
   };
 }
 
+async function lookupGriisNigeria(name) {
+  const cleanName = name.replace(/\(.*?\)/g, "").replace(/\bcf\.?\b/gi, "").trim();
+  const searchUrl = "https://api.gbif.org/v1/species/search?datasetKey=" +
+    GRIIS_NIGERIA_DATASET_KEY + "&q=" + encodeURIComponent(cleanName) + "&limit=10";
+  const search = await safeFetchJson(searchUrl, 7000);
+  if (!search.ok) {
+    return { checked: false, found: false, note: "GRIIS Nigeria checklist lookup failed: " + search.reason };
+  }
+
+  const queryKey = regionalNameKey(cleanName);
+  const records = (search.data && search.data.results) || [];
+  const match = records.find(record =>
+    [record.canonicalName, record.species].some(candidate =>
+      candidate && regionalNameKey(candidate) === queryKey
+    )
+  );
+  if (!match) {
+    return {
+      checked: true,
+      found: false,
+      note: "No exact species match in the GRIIS Nigeria checklist; absence from the checklist does not establish native status."
+    };
+  }
+
+  const distributionUrl = "https://api.gbif.org/v1/species/" +
+    encodeURIComponent(match.key) + "/distributions?limit=100";
+  const distribution = await safeFetchJson(distributionUrl, 7000);
+  if (!distribution.ok) {
+    return {
+      checked: true,
+      found: true,
+      name: match.canonicalName || match.species || cleanName,
+      establishmentMeans: null,
+      note: "Listed in the GRIIS Nigeria checklist, but its distribution detail could not be retrieved: " + distribution.reason
+    };
+  }
+
+  const rows = (distribution.data && distribution.data.results) || [];
+  const nigeriaRecord = rows.find(row =>
+    row.country === "NG" || (row.locality || "").toLowerCase().includes("nigeria")
+  );
+  const means = (nigeriaRecord && nigeriaRecord.establishmentMeans || "").toUpperCase();
+  const statusDescription = means
+    ? "Nigeria establishment means: " + means + "."
+    : "The checklist entry does not specify establishment means.";
+
+  return {
+    checked: true,
+    found: true,
+    name: match.canonicalName || match.species || cleanName,
+    establishmentMeans: means || null,
+    note: "Listed in the GRIIS Nigeria checklist of introduced and invasive alien species. " + statusDescription
+  };
+}
+
 async function lookupINaturalist(scientificName) {
   const url = "https://api.inaturalist.org/v1/taxa?q=" + encodeURIComponent(scientificName) + "&rank=species&per_page=1";
   const result = await safeFetchJson(url, 7000);
@@ -243,11 +302,14 @@ exports.handler = async function (event) {
     sources: {
       curated: { checked: false, note: "Not in the curated West African species table" },
       gbif: { checked: false, note: "Not queried" },
+      griis: { checked: false, note: "Not queried" },
       inaturalist: { checked: false, note: "Not queried by automated lookup \u2014 cross-check manually" },
       wikidata: { checked: false, note: "Not queried" }
     }
   };
   let gbifUsageKey = null;
+  let statusSource = null;
+  const griisPromise = lookupGriisNigeria(rawName);
 
   // ---- 1. Regional species table (instant, no network) ----
   const regional = lookupRegional(rawName);
@@ -265,6 +327,7 @@ exports.handler = async function (event) {
   };
 
   if (useRegional) {
+    statusSource = "curated";
     const native = regionalStatus === "Native";
     const statusLabel = native ? "Native · Indigenous (regional table)" : "Non-native · Introduced (regional table)";
     const hasNamedSources = regional.sources && !/^S\d+(?:,\s*S\d+)*$/.test(regional.sources);
@@ -297,6 +360,7 @@ exports.handler = async function (event) {
       }
     } catch (e) { /* classification is a nice-to-have; the regional status is already available */ }
   } else if (useWcvp) {
+    statusSource = "wcvp";
     const native = wcvp.status === 0;
     result.matchedName = wcvp.accepted;
     result.family = wcvp.family || null;
@@ -377,9 +441,11 @@ exports.handler = async function (event) {
           } else if (nigeriaDist) {
             const means = (nigeriaDist.establishmentMeans || "UNCERTAIN").toUpperCase();
             if (means === "NATIVE") {
+              statusSource = "gbif";
               result.status = "native"; result.statusLabel = "Native \u00b7 Indigenous (GBIF, automated)";
               result.note = "GBIF lists a NATIVE distribution record for Nigeria specifically.";
             } else if (["INTRODUCED", "NATURALIZED", "ADVENTIVE", "INVASIVE"].includes(means)) {
+              statusSource = "gbif";
               result.status = "non-native"; result.statusLabel = "Non-native \u00b7 " + means.charAt(0) + means.slice(1).toLowerCase() + " (GBIF, automated)";
               result.note = "GBIF lists a Nigeria distribution record with establishmentMeans = " + means + ".";
             } else {
@@ -397,6 +463,7 @@ exports.handler = async function (event) {
               const nativeOutside = nativeRecs.filter(d => d.country && !AFRICAN_ISO2.has(d.country.toUpperCase()));
               const introducedInAfrica = dists.filter(d => ["INTRODUCED", "NATURALIZED", "INVASIVE"].includes((d.establishmentMeans || "").toUpperCase()) && AFRICAN_ISO2.has((d.country || "").toUpperCase()));
               if (!nativeInAfrica && nativeOutside.length && introducedInAfrica.length) {
+                statusSource = "gbif";
                 const nativeCountries = [...new Set(nativeOutside.map(d => d.country))].join(", ");
                 const introCountries = [...new Set(introducedInAfrica.map(d => d.country))].join(", ");
                 result.statusLabel = "Likely non-native (needs confirmation)";
@@ -417,7 +484,7 @@ exports.handler = async function (event) {
     }
   }
 
-  // ---- 3. Regional names and common names (best-effort, never blocks) ----
+  // ---- 4. Regional names and common names (best-effort, never blocks) ----
   const nameForLookup = result.matchedName || rawName;
   const [wd, gbifNames, inat] = await Promise.all([
     lookupLocalNames(nameForLookup).catch(e => ({ checked: false, names: [], namesByLanguage: {}, commonName: null, note: "Wikidata lookup errored: " + e.message })),
@@ -435,6 +502,28 @@ exports.handler = async function (event) {
   result.sources.wikidata = { checked: wd.checked, note: wd.note };
   result.sources.gbifNames = { checked: gbifNames.checked, note: gbifNames.note };
   result.sources.inaturalist = { checked: inat.checked, note: inat.note };
+
+  const griis = await griisPromise;
+  result.sources.griis = { checked: griis.checked, note: griis.note };
+  if (griis.found) {
+    const means = griis.establishmentMeans;
+    const meansLabel = means
+      ? means.charAt(0) + means.slice(1).toLowerCase()
+      : "introduced or invasive";
+    const nativeConflict = result.status === "native";
+    if (statusSource !== "curated" && statusSource !== "wcvp") {
+      result.status = "non-native";
+      result.statusLabel = "Non-native \u00b7 " + meansLabel + " (GRIIS Nigeria)";
+      result.origin = "GRIIS Nigeria checklist";
+      result.note = "The GRIIS Nigeria checklist includes this species as an introduced or invasive alien taxon." +
+        (means ? " Its GBIF checklist distribution record specifies " + means + " in Nigeria." : " The specific invasion status is not stated in the checklist record.");
+      if (nativeConflict) {
+        result.note += " This conflicts with the GBIF distribution record and needs regional review.";
+      }
+    } else if (nativeConflict) {
+      result.note += " GRIIS Nigeria also lists this species as introduced or invasive; the conflicting sources need regional review.";
+    }
+  }
 
   return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: JSON.stringify(result) };
 };
