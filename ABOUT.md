@@ -88,6 +88,20 @@ fails, use Push local data to cloud. Export a new CSV or Excel file to include
 the updated weather. Both formats include the weather source, observation
 time, and whether it is historical, where available.
 
+For cloud sync, the Supabase `public.observations` table must have a `weather`
+JSONB column. If sync reports that the column is missing, export a JSON backup
+on the device with the updated records, then run this in the Supabase SQL Editor:
+
+```sql
+alter table public.observations
+  add column if not exists weather jsonb;
+```
+
+Once the schema change is applied, choose **Push local data to cloud** on that
+same device. Verify that the push succeeds before clearing browser data or
+changing devices. Do not rerun backfill to retry a cloud sync: already saved
+weather is deliberately skipped.
+
 **Local names, where they exist.** Alongside the scientific classification,
 the app checks for recorded Yoruba, Igbo, and Hausa common names for each
 species — useful context for community-facing fieldwork, though coverage

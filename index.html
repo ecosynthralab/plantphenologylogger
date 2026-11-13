@@ -628,7 +628,11 @@ async function supabaseWrite(table, action, payload) {
     const data = await res.json();
     if (!data.ok) {
       console.warn('Cloud sync failed (data is still saved locally):', data.error);
-      setSyncStatus('error', 'Cloud sync: ' + action + ' failed (' + data.error + ') \u2014 saved locally only');
+      const missingWeatherColumn = table === 'observations' && /weather/i.test(data.error || '') &&
+        /PGRST204|schema cache/i.test(data.error || '');
+      setSyncStatus('error', missingWeatherColumn
+        ? 'Cloud sync: the observations table needs a weather jsonb column in Supabase. Export a JSON backup, add the column, then use Push local data to cloud.'
+        : 'Cloud sync: ' + action + ' failed (' + data.error + ') \u2014 saved locally only');
       return { ok: false, error: data.error };
     }
     return { ok: true, warning: data.warning || null };
@@ -792,6 +796,11 @@ function supabaseSubscribeRealtime() {
       const key = 'obs:' + payload.new.id;
       const local = lsGet(key);
       const pushed = getPushedIds('observations');
+      if (local && !pushed[payload.new.id] && hasRecordedWeather(local.weather) &&
+          !hasRecordedWeather(payload.new.weather)) {
+        setSyncStatus('error', 'An unsynced local weather update was kept instead of a cloud update. Export a JSON backup and push local data to cloud after fixing sync.');
+        return;
+      }
       if (!local || pushed[payload.new.id] || remoteIsNewer(payload.new, local)) {
         lsSet(key, payload.new);
         if (document.getElementById('view-log').classList.contains('active')) refreshLog();

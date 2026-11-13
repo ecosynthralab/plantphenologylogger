@@ -168,6 +168,41 @@ function makeHarness(records, options = {}) {
   assert.equal(sheets.Observations[0]['Weather Historical'], true);
   assert.equal(sheets.Observations[1]['Weather Historical'], false);
   assert.equal(sheets.Observations[2]['Weather Historical'], '');
+
+  const realtimeSource = html.slice(
+    html.indexOf('function supabaseSubscribeRealtime()'),
+    html.indexOf('// STORAGE SHIM')
+  );
+  const handlers = {};
+  const channel = {
+    on: (_event, filter, callback) => { handlers[filter.table] = callback; return channel; },
+    subscribe: () => channel
+  };
+  let local = makeRecord('a', { savedAt: '2026-08-18', weather: { temperatureC: 25 } });
+  let pushed = {};
+  let syncMessage = '';
+  const realtimeContext = {
+    SUPABASE_ENABLED: true,
+    supabaseClient: { channel: () => channel },
+    lsGet: () => local,
+    lsSet: (_key, value) => { local = value; return true; },
+    getPushedIds: () => pushed,
+    hasRecordedWeather: value => !!value && value.temperatureC != null,
+    remoteIsNewer: (remote, original) => remote.savedAt > original.savedAt,
+    setSyncStatus: (_state, message) => { syncMessage = message; },
+    document: { getElementById: () => ({ classList: { contains: () => false } }) }
+  };
+  vm.runInNewContext(realtimeSource, realtimeContext);
+  realtimeContext.supabaseSubscribeRealtime();
+  const remote = makeRecord('a', { savedAt: '2026-11-13', weather: null });
+  handlers.observations({ eventType: 'UPDATE', new: remote });
+  assert.equal(local.weather.temperatureC, 25);
+  assert.match(syncMessage, /unsynced local weather update was kept/);
+  pushed = { a: true };
+  handlers.observations({ eventType: 'UPDATE', new: remote });
+  assert.equal(local.weather, null, 'synced records still accept remote changes');
+  handlers.observations({ eventType: 'UPDATE', new: makeRecord('a', { weather: { temperatureC: 22 } }) });
+  assert.equal(local.weather.temperatureC, 22);
   console.log('PASS: historical weather backfill and noon lookup');
 })().catch(error => {
   console.error(error.stack || error);
