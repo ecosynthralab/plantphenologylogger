@@ -77,6 +77,17 @@ or an Excel workbook (with a species summary sheet included), ready for
 whatever comes after fieldwork — a stats package, a report, a supervisor's
 inbox.
 
+**Backfill historical weather.** In Log & export, export a JSON backup, then
+choose Backfill historical weather while online. The app updates observations
+on the current device that have a valid past visit date and coordinates but
+no recorded weather; existing weather and manual weather/soil notes are
+preserved. Open-Meteo supplies estimates for 12:00 local time, not on-site
+measurements, and recent dates may not yet be available. The result reports
+skipped and failed records. Retry unavailable lookups later; if cloud sync
+fails, use Push local data to cloud. Export a new CSV or Excel file to include
+the updated weather. Both formats include the weather source, observation
+time, and whether it is historical, where available.
+
 **Local names, where they exist.** Alongside the scientific classification,
 the app checks for recorded Yoruba, Igbo, and Hausa common names for each
 species — useful context for community-facing fieldwork, though coverage

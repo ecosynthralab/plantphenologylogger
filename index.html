@@ -441,9 +441,12 @@ footer{margin-top:50px; padding:20px; border-top:1px solid var(--line); font-fam
     <div class="log-toolbar">
       <button id="push-to-cloud" style="background:var(--native);border-color:var(--native);">Push local data to cloud</button>
       <button id="repair-species-btn" style="background:var(--copper);border-color:var(--copper);">Repair missing species</button>
+      <button id="backfill-weather-btn" style="background:var(--copper);border-color:var(--copper);">Backfill historical weather</button>
     </div>
     <div class="status-msg" id="pushStatus" style="text-align:left;margin-bottom:14px;"></div>
     <div class="status-msg" id="repairStatus" style="text-align:left;margin-bottom:14px;"></div>
+    <div class="status-msg" id="weatherBackfillStatus" role="status" aria-live="polite" style="text-align:left;margin-bottom:14px;"></div>
+    <div class="status-msg" style="text-align:left;margin-bottom:14px;">Backfill sends visit dates and coordinates to Open-Meteo for estimates at 12:00 local time. Export a JSON backup first; existing weather is not replaced.</div>
 
     <div class="log-toolbar">
       <button class="xlsx" id="export-xlsx">Export Excel (.xlsx)</button>
@@ -2289,9 +2292,10 @@ async function fetchWeather(loc, date) {
     let c;
     if (historical) {
       const h = json.hourly;
-      if (!h || !h.time || h.temperature_2m[12] == null) return null;
-      c = { time: h.time[12] };
-      Object.keys(h).forEach(k => { if (k !== 'time') c[k] = h[k][12]; });
+      const noon = h && Array.isArray(h.time) ? h.time.indexOf(date + 'T12:00') : -1;
+      if (noon < 0 || !h.temperature_2m || h.temperature_2m[noon] == null) return null;
+      c = { time: h.time[noon] };
+      Object.keys(h).forEach(k => { if (k !== 'time') c[k] = h[k][noon]; });
     } else {
       c = json.current;
     }
@@ -2745,6 +2749,79 @@ function renderChart(){
 
 document.getElementById('refresh-log').addEventListener('click', refreshLog);
 
+// =====================================================================
+// BACKFILL HISTORICAL WEATHER
+// =====================================================================
+function hasRecordedWeather(weather) {
+  return !!weather && ['temperatureC', 'humidityPct', 'precipitationMm', 'cloudCoverPct',
+    'windSpeedKmh', 'pressureHpa', 'conditions'].some(k => weather[k] != null && weather[k] !== '');
+}
+
+function isPastVisitDate(date) {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || date >= todayStr()) return false;
+  const parsed = new Date(date + 'T00:00:00Z');
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
+
+document.getElementById('backfill-weather-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('backfill-weather-btn');
+  const statusEl = document.getElementById('weatherBackfillStatus');
+  btn.disabled = true;
+  statusEl.style.color = '';
+  statusEl.textContent = 'Scanning observations on this device\u2026';
+  const counts = { updated: 0, existing: 0, missing: 0, unavailable: 0, changed: 0, storage: 0, sync: 0 };
+  const cache = new Map();
+  try {
+    const records = await fetchAllRecords('obs:');
+    let done = 0;
+    for (const record of records) {
+      done++;
+      btn.textContent = `Checking ${done} / ${records.length}\u2026`;
+      if (hasRecordedWeather(record.weather)) { counts.existing++; continue; }
+      if (!record.id || !isPastVisitDate(record.visitDate) || !record.location ||
+          !validGps(record.location.lat, record.location.lon)) {
+        counts.missing++;
+        continue;
+      }
+      const key = JSON.stringify([record.location.lat, record.location.lon, record.visitDate]);
+      if (!cache.has(key)) cache.set(key, await fetchWeather(record.location, record.visitDate));
+      const weather = cache.get(key);
+      if (!weather) { counts.unavailable++; continue; }
+
+      // Another tab or cloud update may have changed the observation during the lookup.
+      const current = lsGet('obs:' + record.id);
+      if (!current || hasRecordedWeather(current.weather) || current.visitDate !== record.visitDate ||
+          !current.location || current.location.lat !== record.location.lat || current.location.lon !== record.location.lon) {
+        counts.changed++;
+        continue;
+      }
+      const updated = { ...current, weather };
+      if (!lsSet('obs:' + current.id, updated)) { counts.storage++; continue; }
+      counts.updated++;
+      if (SUPABASE_ENABLED) {
+        clearPushed('observations', current.id);
+        const result = await supabaseUpsert('observations', updated);
+        if (!result.ok) { counts.sync++; console.warn('Weather backfill cloud sync failed:', result.error); }
+      }
+    }
+    checkStorageHeadroom();
+    statusEl.style.color = counts.unavailable || counts.storage || counts.sync ? 'var(--nonnative)' : 'var(--native)';
+    statusEl.textContent = `Done \u2014 updated ${counts.updated}; kept existing weather on ${counts.existing}; ` +
+      `skipped ${counts.missing} without valid coordinates or a past visit date; ` +
+      `${counts.unavailable} unavailable from Open-Meteo; ${counts.changed} changed during lookup; ` +
+      `${counts.storage} could not be saved locally; ${counts.sync} could not sync. ` +
+      'Retry unavailable records later; use Push local data to cloud for sync failures. Export a new CSV or Excel file to include the updates.';
+    await refreshLog();
+  } catch (e) {
+    console.warn('Weather backfill stopped:', e);
+    statusEl.style.color = 'var(--nonnative)';
+    statusEl.textContent = `Backfill stopped after updating ${counts.updated} observation(s): ${e.message}. Saved updates are retained; retry and use Push local data to cloud if needed.`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Backfill historical weather';
+  }
+});
+
 // Pushes every locally-stored observation and species up to Supabase in
 // one pass — the missing complement to supabaseHydrate(). Needed because
 // the per-save push only fires once, at the moment of saving; if Supabase
@@ -2948,13 +3025,16 @@ document.getElementById('export-json').addEventListener('click', async ()=>{
 
 document.getElementById('export-csv').addEventListener('click', async ()=>{
   const records = await fetchAllRecords('obs:');
-  const headers = ['visitDate','species','plotId','vegetative','flowerBud','openFlower','fruitPod','senescent','growthStage','height','observer','cooccurring','weatherSoil','notes','lat','lon','accuracy','temperatureC','humidityPct','precipitationMm','cloudCoverPct','windSpeedKmh','pressureHpa','conditions','savedAt'];
+  const headers = ['visitDate','species','plotId','vegetative','flowerBud','openFlower','fruitPod','senescent','growthStage','height','observer','cooccurring','weatherSoil','notes','lat','lon','accuracy','temperatureC','humidityPct','precipitationMm','cloudCoverPct','windSpeedKmh','pressureHpa','conditions','savedAt','weatherObservedAt','weatherSource','weatherHistorical'];
   const rows = [headers.join(',')].concat(records.map(r => headers.map(h=>{
     let v;
     if (h==='lat') v = r.location?r.location.lat:'';
     else if (h==='lon') v = r.location?r.location.lon:'';
     else if (h==='accuracy') v = r.location&&r.location.accuracy!=null?r.location.accuracy:'';
     else if (['temperatureC','humidityPct','precipitationMm','cloudCoverPct','windSpeedKmh','pressureHpa','conditions'].includes(h)) v = (r.weather && r.weather[h]) ?? '';
+    else if (h==='weatherObservedAt') v = (r.weather && r.weather.observedAt) ?? '';
+    else if (h==='weatherSource') v = (r.weather && r.weather.source) ?? '';
+    else if (h==='weatherHistorical') v = (r.weather && r.weather.historical) ?? '';
     else v = r[h] ?? '';
     v = String(v).replace(/"/g,'""');
     return /[,"\n]/.test(v) ? `"${v}"` : v;
@@ -2978,7 +3058,9 @@ document.getElementById('export-xlsx').addEventListener('click', async ()=>{
     'Temperature (°C)': r.weather?r.weather.temperatureC:'', 'Humidity (%)': r.weather?r.weather.humidityPct:'',
     'Precipitation (mm)': r.weather?r.weather.precipitationMm:'', 'Cloud Cover (%)': r.weather?r.weather.cloudCoverPct:'',
     'Wind Speed (km/h)': r.weather?r.weather.windSpeedKmh:'', 'Pressure (hPa)': r.weather?r.weather.pressureHpa:'',
-    'Weather Conditions': r.weather?r.weather.conditions:'', 'Has Photo': r.hasPhoto?'Yes':'No', 'Saved At': r.savedAt
+    'Weather Conditions': r.weather?r.weather.conditions:'', 'Has Photo': r.hasPhoto?'Yes':'No', 'Saved At': r.savedAt,
+    'Weather Observed At': r.weather?.observedAt ?? '', 'Weather Source': r.weather?.source ?? '',
+    'Weather Historical': r.weather?.historical ?? ''
   }));
 
   const speciesMap = {};
